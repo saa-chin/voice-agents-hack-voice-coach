@@ -264,13 +264,41 @@ info "This will start Metro in a new window if it isn't already running."
 RN_ARGS=( --deviceId "$DEVICE" --mode "$VARIANT" )
 
 if ! ( cd "$MOBILE_DIR" && npx react-native run-android "${RN_ARGS[@]}" ); then
+  warn "react-native CLI swallowed the real Gradle error."
+  warn "Re-running Gradle directly to show the actual failure..."
+  echo
+
+  if [[ "$VARIANT" == "release" ]]; then
+    GRADLE_TASK="app:installRelease"
+  else
+    GRADLE_TASK="app:installDebug"
+  fi
+
+  # Run the exact command the RN CLI runs, but with --stacktrace --info so the
+  # actual error (missing SDK component, dex error, signing, etc.) is visible.
+  ( cd "$ANDROID_DIR" && \
+    ./gradlew "$GRADLE_TASK" -x lint \
+      -PreactNativeDevServerPort=8081 \
+      --stacktrace --info ) || true
+
+  echo
   die "Build/launch failed." \
-      "Common fixes:" \
-      "  • Make sure JDK 17 is active:  export JAVA_HOME=\$(/usr/libexec/java_home -v 17)" \
-      "  • Open mobile/android in Android Studio once so Gradle can sync." \
-      "  • Run with --clean to nuke caches:  ./run-android --clean" \
-      "  • Re-check device:  ./run-android --list" \
-      "  • If signing fails on --release, configure a release keystore in mobile/android/app."
+      "Look ABOVE this message for the actual Gradle error (lines starting with 'FAILURE:', 'e:', 'error:', 'What went wrong:', or 'Caused by:')." \
+      "" \
+      "Most common causes on a fresh laptop:" \
+      "  • Wrong JDK. RN 0.85 needs JDK 17. Check: java -version" \
+      "    Fix (macOS):  brew install --cask zulu@17" \
+      "                  export JAVA_HOME=\$(/usr/libexec/java_home -v 17)" \
+      "  • Missing Android SDK platform/build-tools. Open Android Studio →" \
+      "    SDK Manager → install Android 14 (API 34) + the latest build-tools." \
+      "  • Missing NDK / CMake (RN often needs them for native modules)." \
+      "    SDK Manager → SDK Tools tab → tick 'NDK (Side by side)' + 'CMake'." \
+      "  • Stale Gradle/Metro caches. Try:  ./run-android --clean" \
+      "  • Device disconnected mid-install. Re-check:  ./run-android --list" \
+      "  • Release signing not configured. See mobile/android/app/build.gradle." \
+      "" \
+      "Still stuck? Run with full verbosity:" \
+      "  cd mobile/android && ./gradlew $GRADLE_TASK --stacktrace --info"
 fi
 
 step "Done"
