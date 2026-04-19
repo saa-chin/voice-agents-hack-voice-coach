@@ -362,10 +362,22 @@ def voice_chat(
             duration_s = len(pcm_bytes) / 2 / VOICE_SR
             print(f"you> [spoke {duration_s:.1f}s of audio]")
 
-            # Gemma 4 takes audio attached to the latest user message.
-            # Keep history light: store a placeholder for past audio turns.
-            current_user = {"role": "user", "content": ""}
-            messages.append(current_user)
+            # Reset KV cache every turn. Otherwise the encoded audio from
+            # previous turns lingers and the model may answer the wrong one.
+            try:
+                cactus.cactus_reset(model)
+            except Exception:
+                pass
+
+            # Build a fresh message list: system prompt + last few text-only
+            # turns of context + a single new user turn that the audio
+            # attaches to. We don't keep prior user turns in history because
+            # we have no transcript for them.
+            turn_messages: list[dict] = []
+            if sys_msg is not None:
+                turn_messages.append(sys_msg)
+            turn_messages.extend(history[-VOICE_HISTORY_TURNS * 2:])
+            turn_messages.append({"role": "user", "content": ""})
 
             print("bot> ", end="", flush=True)
             buffer = ""
@@ -400,14 +412,13 @@ def voice_chat(
             try:
                 _cactus_complete_audio(
                     cactus, model,
-                    json.dumps(messages),
+                    json.dumps(turn_messages),
                     chat_options,
                     pcm_bytes,
                     on_token,
                 )
             except Exception as e:
                 print(f"\n(model error: {e})")
-                messages.pop()
                 speaker_done.set()
                 speaker_thread.join()
                 continue
@@ -420,9 +431,11 @@ def voice_chat(
             speaker_thread.join()
             print()
 
-            # Replace placeholder with stable text for history continuity.
-            current_user["content"] = "[spoken audio]"
-            messages.append({"role": "assistant", "content": reply})
+            # Keep only the assistant's reply for context. We pair it with a
+            # short placeholder user turn so the model sees a normal chat
+            # alternation when we replay history next turn.
+            history.append({"role": "user", "content": "(spoke to you)"})
+            history.append({"role": "assistant", "content": reply})
     except KeyboardInterrupt:
         print("\n(stopping)")
     finally:
