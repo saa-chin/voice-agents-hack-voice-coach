@@ -27,6 +27,22 @@ def _b64_pcm(seconds: float = 1.0) -> str:
     return base64.b64encode(_silence_pcm(seconds)).decode("ascii")
 
 
+def _drain_thinking(ws):
+    """Consume any number of `thinking` step frames and return the next
+    non-thinking message.
+
+    The server now emits a *sequence* of thinking frames (analyzing_audio,
+    generating_response, parsing_response, optionally synthesizing_voice)
+    so the UI can show a live progress list instead of a static label.
+    Tests don't care which steps fired — they only care about the
+    `coach`/`error`/`advance`/`retry` frame that follows.
+    """
+    while True:
+        msg = ws.receive_json()
+        if msg["type"] != "thinking":
+            return msg
+
+
 @pytest.fixture
 def server(monkeypatch, tmp_path):
     """A fresh server with model pre-loaded as a stub.
@@ -278,9 +294,7 @@ def test_ws_happy_path_first_turn_advance(server):
             assert metrics["dbfs"] is not None
             assert metrics["duration_s"] > 0
 
-            assert ws.receive_json()["type"] == "thinking"
-
-            coach_msg = ws.receive_json()
+            coach_msg = _drain_thinking(ws)
             assert coach_msg["type"] == "coach"
             assert coach_msg["ack"] == "Strong voice."
             assert coach_msg["next_action"] == "advance"
@@ -325,8 +339,7 @@ def test_ws_retry_action_resends_same_drill(server):
 
             ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
             ws.receive_json()  # metrics
-            ws.receive_json()  # thinking
-            ws.receive_json()  # coach (retry)
+            _drain_thinking(ws)  # coach (retry) — drains the thinking-step frames first
             assert ws.receive_json()["type"] == "retry"
             redo = ws.receive_json()
             assert redo["type"] == "drill"
@@ -335,8 +348,7 @@ def test_ws_retry_action_resends_same_drill(server):
             # Send audio again, this time advance.
             ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
             ws.receive_json()  # metrics
-            ws.receive_json()  # thinking
-            ws.receive_json()  # coach (advance)
+            _drain_thinking(ws)  # coach (advance)
             assert ws.receive_json()["type"] == "advance"
             assert ws.receive_json()["position"] == 1
 
@@ -449,8 +461,7 @@ def test_ws_model_returns_invalid_json_skips_drill(server):
             d0 = ws.receive_json()
             ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
             ws.receive_json()  # metrics
-            ws.receive_json()  # thinking
-            err = ws.receive_json()
+            err = _drain_thinking(ws)
             assert err["type"] == "error"
             assert "JSON" in err["message"]
             # Server should auto-advance past the broken drill.
@@ -468,8 +479,7 @@ def test_ws_model_inference_error_continues_session(server):
             ws.receive_json()  # drill
             ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
             ws.receive_json()  # metrics
-            ws.receive_json()  # thinking
-            err = ws.receive_json()
+            err = _drain_thinking(ws)
             assert err["type"] == "error"
             assert "kaboom" in err["message"]
 
@@ -496,16 +506,14 @@ def test_ws_completes_session_after_last_drill(server, monkeypatch):
             for i in range(total - 1):
                 ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
                 ws.receive_json()  # metrics
-                ws.receive_json()  # thinking
-                ws.receive_json()  # coach
+                _drain_thinking(ws)  # coach
                 ws.receive_json()  # advance
                 ws.receive_json()  # next drill
 
             # Last drill — no advance/drill, then session_done.
             ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
             ws.receive_json()  # metrics
-            ws.receive_json()  # thinking
-            ws.receive_json()  # coach
+            _drain_thinking(ws)  # coach
             done = ws.receive_json()
             assert done["type"] == "session_done"
             assert done["summary"]["advanced"] == total
@@ -557,8 +565,7 @@ def test_ws_coach_says_rest_ends_session(server):
             ws.receive_json()  # drill 0
             ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
             ws.receive_json()  # metrics
-            ws.receive_json()  # thinking
-            coach_msg = ws.receive_json()
+            coach_msg = _drain_thinking(ws)
             assert coach_msg["next_action"] == "rest"
             done = ws.receive_json()
             assert done["type"] == "session_done"
@@ -893,10 +900,9 @@ def test_ws_audio_reply_emitted_when_tts_available(server, monkeypatch):
                 "sample_rate": 16000,
             })
             ws.receive_json()  # metrics
-            ws.receive_json()  # thinking
-            coach_msg = ws.receive_json()
+            coach_msg = _drain_thinking(ws)
             assert coach_msg["type"] == "coach"
-            audio = ws.receive_json()
+            audio = _drain_thinking(ws)
             assert audio["type"] == "audio_reply"
             assert audio["source"] == "macos_say"
             # WAV is base64-encoded; round-trip back to the bytes the
@@ -1010,11 +1016,10 @@ def test_ws_no_audio_reply_when_say_returns_none(server, monkeypatch):
                 "sample_rate": 16000,
             })
             ws.receive_json()  # metrics
-            ws.receive_json()  # thinking
-            assert ws.receive_json()["type"] == "coach"
+            assert _drain_thinking(ws)["type"] == "coach"
             # Default canned reply has next_action=advance — that's
             # what we should see next, with no audio_reply in between.
-            assert ws.receive_json()["type"] == "advance"
+            assert _drain_thinking(ws)["type"] == "advance"
 
 
 def test_say_to_wav_returns_none_without_say_binary(server, monkeypatch):
@@ -1110,7 +1115,6 @@ def test_ws_cactus_reset_exception_is_logged_but_continues(server, monkeypatch):
             ws.receive_json()  # drill
             ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
             ws.receive_json()  # metrics
-            ws.receive_json()  # thinking
-            coach_msg = ws.receive_json()
+            coach_msg = _drain_thinking(ws)
             # cactus_reset failure is non-fatal — coach response still arrives.
             assert coach_msg["type"] == "coach"

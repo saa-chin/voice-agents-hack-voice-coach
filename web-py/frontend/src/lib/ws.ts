@@ -124,12 +124,33 @@ export interface ReadyMsg {
   whisper_loaded?: boolean;
 }
 
+/** Granular progress beats inside the "thinking" phase. The backend
+ * emits one frame per beat (in order) so the UI can render a live
+ * stepper with per-step elapsed time instead of a static "Coach is
+ * thinking…" placeholder for the full ~10s. The legacy single
+ * `{ type: "thinking" }` frame (no step) remains valid: handlers
+ * should treat it as the first beat. */
+export type ThinkingStep =
+  | 'analyzing_audio'
+  | 'generating_response'
+  | 'parsing_response'
+  | 'synthesizing_voice';
+
+export interface ThinkingMsg {
+  type: 'thinking';
+  /** Backend sends a step on every frame; older servers may omit it. */
+  step?: ThinkingStep;
+  /** Short, user-facing label for this step. Backend always includes
+   * one; the frontend has a fallback table for older servers. */
+  label?: string;
+}
+
 export type ServerMessage =
   | { type: 'loading' }
   | ReadyMsg
   | DrillMsg
   | MetricsMsg
-  | { type: 'thinking' }
+  | ThinkingMsg
   | CoachMsg
   | AudioReplyMsg
   | { type: 'advance' }

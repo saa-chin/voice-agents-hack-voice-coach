@@ -23,6 +23,7 @@ import {
   type MetricsMsg,
   type ServerMessage,
   type SummaryMsg,
+  type ThinkingStep,
 } from '../lib/ws';
 
 const BACKEND_PORT =
@@ -61,6 +62,49 @@ const STAGE_LABEL: Record<Stage, string> = {
   counting: 'Counting',
   main_task: 'Main task',
 };
+
+// ---- Thinking-phase progress --------------------------------------------
+//
+// The backend now emits a sequence of `thinking` frames (analyzing_audio,
+// generating_response, parsing_response, synthesizing_voice) so the UI
+// can show an honest live progress list — "Coach is thinking…" is no
+// longer the right level of detail when the actual work takes 10+s.
+//
+// We render the steps as a small stepper below the mic. Each step has:
+//   • a started timestamp (set when its frame arrived)
+//   • an ended timestamp (set when the next step's frame arrives, OR
+//     when the turn ends via coach/error/done)
+// The currently in-flight step ticks live; finished steps freeze at
+// their measured duration so judges can see exactly where the seconds
+// went. Total ≈ first step start → last step end, which matches what
+// the user perceives as the "thinking spinner" duration.
+
+type ThinkingEntry = {
+  step: ThinkingStep;
+  label: string;
+  startedAt: number;
+  endedAt?: number;
+};
+
+// Friendly label fallbacks. The backend ships its own `label` text on
+// every frame, but we keep these as a defensive fallback so a forgotten
+// label or an older server still produces a meaningful UI string.
+const THINKING_STEP_LABEL: Record<ThinkingStep, string> = {
+  analyzing_audio: 'Analyzing your audio…',
+  generating_response: 'Generating coaching response…',
+  parsing_response: 'Parsing model output…',
+  synthesizing_voice: 'Synthesizing voice…',
+};
+
+// Stable visual order — matches the order the backend emits frames.
+// Used purely as a fallback render order before any frame has arrived,
+// or to fill in upcoming steps as faint placeholders.
+const THINKING_STEP_ORDER: ThinkingStep[] = [
+  'analyzing_audio',
+  'generating_response',
+  'parsing_response',
+  'synthesizing_voice',
+];
 
 // ---- theme ----------------------------------------------------------------
 //
@@ -113,6 +157,11 @@ export default function CoachApp() {
   const [intentResult, setIntentResult] = useState<IntentResultMsg | null>(
     null,
   );
+  // Live progress beats during the "thinking" phase. Reset to [] each
+  // time the user starts recording a new attempt; appended to as
+  // `thinking` frames stream in; final step gets `endedAt` set when
+  // the coach reply (or an error) arrives.
+  const [thinkingSteps, setThinkingSteps] = useState<ThinkingEntry[]>([]);
   const [, forceTick] = useState(0);
 
   const wsRef = useRef<Connection | null>(null);
@@ -163,6 +212,16 @@ export default function CoachApp() {
   useEffect(() => {
     autoModeRef.current = autoMode;
   }, [autoMode]);
+
+  // Tick the in-flight thinking-step clock every 100ms so the user
+  // sees a live elapsed counter on whichever step is currently
+  // running. Started/stopped purely off `phase` so we don't burn CPU
+  // outside the thinking window.
+  useEffect(() => {
+    if (phase !== 'thinking') return;
+    const id = window.setInterval(() => forceTick((t) => t + 1), 100);
+    return () => window.clearInterval(id);
+  }, [phase]);
 
   // ---- WS lifecycle ------------------------------------------------------
 
@@ -241,6 +300,7 @@ export default function CoachApp() {
         setCoach(null);
         setLiveTranscript({ final: '', interim: '' });
         setTransientError(null);
+        setThinkingSteps([]);
         setPhase('drill');
         // ONE voice for the entire session. If the backend rendered
         // the prompt with `say` and shipped a wav, play THAT (same
@@ -262,14 +322,47 @@ export default function CoachApp() {
         if (endingRef.current) return;
         setMetrics(msg);
         return;
-      case 'thinking':
+      case 'thinking': {
         if (endingRef.current) return;
         setPhase('thinking');
+        // Each `thinking` frame closes out the previous step and
+        // opens a new one. Frames arriving without a `step` (legacy
+        // single-frame protocol, or older servers) are treated as
+        // the first beat — `analyzing_audio` — so the UI still
+        // shows a meaningful label.
+        const step: ThinkingStep = msg.step ?? 'analyzing_audio';
+        const label = msg.label ?? THINKING_STEP_LABEL[step];
+        const now = performance.now();
+        setThinkingSteps((prev) => {
+          // Suppress duplicates — a server retry under heavy load
+          // could resend the same step. Only the first arrival of a
+          // given step starts its clock.
+          if (prev.some((e) => e.step === step)) return prev;
+          const sealed = prev.map((e, i) =>
+            i === prev.length - 1 && e.endedAt == null
+              ? { ...e, endedAt: now }
+              : e,
+          );
+          return [...sealed, { step, label, startedAt: now }];
+        });
         return;
+      }
       case 'coach': {
         if (endingRef.current) return;
         setCoach(msg);
         setPhase('feedback');
+        // Seal the final in-flight thinking step so its duration
+        // freezes at the moment the coach reply landed (rather than
+        // continuing to tick after the spinner is gone).
+        setThinkingSteps((prev) => {
+          if (!prev.length) return prev;
+          const now = performance.now();
+          return prev.map((e, i) =>
+            i === prev.length - 1 && e.endedAt == null
+              ? { ...e, endedAt: now }
+              : e,
+          );
+        });
         // EXACTLY ONE TTS source. If the backend reported it can
         // render via `say`, we wait for the `audio_reply` frame and
         // do nothing here — no racy fallback timer that would queue
@@ -331,6 +424,18 @@ export default function CoachApp() {
       case 'error':
         // Non-fatal: server stays connected and may send next drill.
         setTransientError(msg.message);
+        // Freeze the in-flight thinking step (if any) at the moment
+        // the error landed — same treatment as the success path so
+        // the user doesn't watch a runaway clock for an aborted turn.
+        setThinkingSteps((prev) => {
+          if (!prev.length) return prev;
+          const now = performance.now();
+          return prev.map((e, i) =>
+            i === prev.length - 1 && e.endedAt == null
+              ? { ...e, endedAt: now }
+              : e,
+          );
+        });
         return;
     }
   }
@@ -359,6 +464,10 @@ export default function CoachApp() {
     cancelServerSpeech();
     setTransientError(null);
     setLiveTranscript({ final: '', interim: '' });
+    // Clear the previous turn's progress beats — the next set will
+    // stream in once the user finishes speaking and the backend
+    // starts emitting new `thinking` frames.
+    setThinkingSteps([]);
     // Defensive: stop + drop any leftover recorder from a prior turn.
     // createRecorder is *one-shot* — its MediaStream is .stop()'d in
     // the underlying stop() and can't be restarted. Always make a fresh one.
@@ -711,6 +820,7 @@ export default function CoachApp() {
             analysis={analysis}
             liveScore={liveScore}
             transcript={liveTranscript}
+            thinkingSteps={thinkingSteps}
             autoMode={autoMode}
             onToggleAuto={() => setAutoMode((v) => !v)}
             transientError={transientError}
@@ -1020,6 +1130,7 @@ function SessionView({
   analysis,
   liveScore,
   transcript,
+  thinkingSteps,
   autoMode,
   onToggleAuto,
   transientError,
@@ -1041,6 +1152,7 @@ function SessionView({
   analysis: AudioAnalysis | null;
   liveScore: LiveScore | null;
   transcript: { final: string; interim: string };
+  thinkingSteps: ThinkingEntry[];
   autoMode: boolean;
   onToggleAuto: () => void;
   transientError: string | null;
@@ -1084,6 +1196,17 @@ function SessionView({
             onStart={onStartRec}
             onStop={onStopRec}
           />
+          {/* While the backend is working, replace the static "Coach is
+              thinking…" caption with a live stepper so the user can see
+              EXACTLY where the seconds are going (audio analysis vs token
+              generation vs JSON parse vs voice synthesis). The panel
+              also stays visible briefly during `feedback` so the user
+              can read the per-step durations after the spinner ends —
+              cleared on the next `recording`/`drill`. */}
+          {(phase === 'thinking' || phase === 'feedback') &&
+            thinkingSteps.length > 0 && (
+              <ThinkingStepsPanel steps={thinkingSteps} phase={phase} />
+            )}
           {/* One thin action bar inline with the mic — no separate
               panel at the bottom. Voice commands invoke the same
               actions as the pills; chip below shows the routed
@@ -1306,12 +1429,155 @@ function MicButton({
             ? 'Mic open — start speaking'
             : 'Recording — tap to stop'
           : isThinking
-          ? 'Coach is thinking…'
+          ? // Detailed step-by-step progress is rendered below in
+            // ThinkingStepsPanel — keep this caption short so it
+            // doesn't compete with the live stepper.
+            'Working on your reply…'
           : isDrill && autoMode
           ? 'Coach is reading the prompt — mic will arm automatically'
           : 'Tap to record your attempt'}
       </div>
     </div>
+  );
+}
+
+function ThinkingStepsPanel({
+  steps,
+  phase,
+}: {
+  steps: ThinkingEntry[];
+  phase: Phase;
+}) {
+  // Render the four canonical steps in order. Each step is in one of
+  // three visual states:
+  //   • finished      → checkmark, frozen duration in seconds
+  //   • in-progress   → spinner, live-ticking duration
+  //   • upcoming      → faint dot, "—" instead of a duration
+  // A small "total elapsed" pill on the right shows the cumulative
+  // time the user has been waiting since the spinner appeared, so
+  // even before any step finishes there's a number ticking.
+  const now = performance.now();
+  // Index by step so we can iterate the canonical order and look up
+  // whatever has arrived so far without losing the "upcoming" rows.
+  const seen = new Map(steps.map((e) => [e.step, e]));
+  // Total = first step's startedAt → either the last sealed endedAt
+  // or now (if anything is still ticking). Falls back to 0 when the
+  // panel renders with an empty list (shouldn't happen in practice
+  // because the parent gates on .length>0, but keeps the math safe).
+  const firstStart = steps[0]?.startedAt ?? now;
+  const lastEntry = steps[steps.length - 1];
+  const totalEnd =
+    lastEntry?.endedAt != null
+      ? lastEntry.endedAt
+      : phase === 'thinking'
+      ? now
+      : lastEntry?.startedAt ?? now;
+  const totalSec = Math.max(0, (totalEnd - firstStart) / 1000);
+  return (
+    <div className="card-soft px-4 py-3">
+      <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-faint)]">
+        <span>What the coach is doing</span>
+        <span className="font-mono normal-case tracking-normal text-[var(--text-muted)]">
+          {totalSec.toFixed(1)}s elapsed
+        </span>
+      </div>
+      <ul className="flex flex-col gap-1.5 text-sm">
+        {THINKING_STEP_ORDER.map((step) => {
+          const entry = seen.get(step);
+          const status: 'done' | 'active' | 'upcoming' = !entry
+            ? 'upcoming'
+            : entry.endedAt != null
+            ? 'done'
+            : 'active';
+          const label = entry?.label ?? THINKING_STEP_LABEL[step];
+          const durationSec =
+            entry == null
+              ? null
+              : status === 'done'
+              ? ((entry.endedAt as number) - entry.startedAt) / 1000
+              : (now - entry.startedAt) / 1000;
+          return (
+            <ThinkingStepRow
+              key={step}
+              status={status}
+              label={label}
+              durationSec={durationSec}
+            />
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function ThinkingStepRow({
+  status,
+  label,
+  durationSec,
+}: {
+  status: 'done' | 'active' | 'upcoming';
+  label: string;
+  durationSec: number | null;
+}) {
+  const icon =
+    status === 'done' ? (
+      // checkmark — matches the accent palette used elsewhere for
+      // "completed" affordances (advance pill, on-target loudness).
+      <svg
+        viewBox="0 0 16 16"
+        className="h-3 w-3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M3 8.5 6.5 12 13 4.5" />
+      </svg>
+    ) : status === 'active' ? (
+      <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-[var(--border-strong)] border-t-[var(--accent)]" />
+    ) : (
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--border-strong)]" />
+    );
+  const iconWrap =
+    status === 'done'
+      ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
+      : status === 'active'
+      ? 'bg-[var(--surface-2)] text-[var(--accent)]'
+      : 'bg-transparent text-[var(--text-faint)]';
+  const labelTone =
+    status === 'upcoming'
+      ? 'text-[var(--text-faint)]'
+      : status === 'done'
+      ? 'text-[var(--text-muted)]'
+      : 'text-[var(--text)] font-medium';
+  return (
+    <li className="flex items-center justify-between gap-3">
+      <span className="flex min-w-0 items-center gap-2">
+        <span
+          className={
+            'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full ' +
+            iconWrap
+          }
+        >
+          {icon}
+        </span>
+        <span className={'truncate ' + labelTone}>{label}</span>
+      </span>
+      <span
+        className={
+          'shrink-0 font-mono text-[11px] tabular-nums ' +
+          (status === 'upcoming'
+            ? 'text-[var(--text-faint)]'
+            : status === 'active'
+            ? 'text-[var(--accent)]'
+            : 'text-[var(--text-muted)]')
+        }
+      >
+        {durationSec == null ? '—' : `${durationSec.toFixed(1)}s`}
+      </span>
+    </li>
   );
 }
 

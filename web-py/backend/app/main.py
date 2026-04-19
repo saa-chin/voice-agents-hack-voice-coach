@@ -36,7 +36,16 @@ Server -> Client:
   { "type": "ready" }
   { "type": "drill", stage, index, prompt, note, target_dbfs, total, position }
   { "type": "metrics", dbfs, duration_s }
-  { "type": "thinking" }
+  { "type": "thinking", step, label }
+       # `step` is one of:
+       #   "analyzing_audio"      — PCM accepted, Gemma is consuming the audio
+       #   "generating_response"  — first response token streamed back
+       #   "parsing_response"     — model call returned, parsing JSON envelope
+       #   "synthesizing_voice"   — rendering the spoken reply via macOS `say`
+       # `label` is a short human-readable phrase the UI can show as-is.
+       # The backend sends one frame per step, in order, so the client can
+       # stack them into a live progress list (with per-step elapsed time)
+       # instead of a static "Coach is thinking…" placeholder.
   { "type": "coach", heard, matched_prompt, ack, feedback,
                      next_action, metrics_observed, latency_s }
   { "type": "audio_reply", wav_b64, source }    # macOS `say` rendered TTS
@@ -711,7 +720,16 @@ async def ws_coach(ws: WebSocket) -> None:
                 "dbfs": round(dbfs, 1) if math.isfinite(dbfs) else None,
                 "duration_s": round(duration_s, 2),
             })
-            await send({"type": "thinking"})
+            # First step the user sees: "we have your audio, Gemma is
+            # chewing on it." Sent BEFORE the to_thread call so the
+            # spinner has something to label even on the slowest
+            # machines (where ~10s can pass before the first token
+            # streams back).
+            await send({
+                "type": "thinking",
+                "step": "analyzing_audio",
+                "label": "Analyzing your audio with Gemma 4…",
+            })
 
             d = drills_list[drill_idx]
             sys_prompt = coach.build_prompt(d, dbfs, duration_s)
@@ -725,6 +743,30 @@ async def ws_coach(ws: WebSocket) -> None:
                 log.debug("cactus_reset raised %s", exc)
 
             collector = coach._TokenCollector()
+            # Wrap the collector so the first streamed token flips the
+            # UI from "analyzing audio" → "generating response". The
+            # callback runs on Cactus's worker thread (we're inside
+            # asyncio.to_thread), so we hop back onto the loop with
+            # run_coroutine_threadsafe; doing the WS send directly from
+            # the worker thread would race the asyncio writer.
+            loop = asyncio.get_running_loop()
+            first_token_signalled = False
+
+            def progress_collector(text: str, tid: int) -> None:
+                nonlocal first_token_signalled
+                collector(text, tid)
+                if first_token_signalled or not text:
+                    return
+                first_token_signalled = True
+                asyncio.run_coroutine_threadsafe(
+                    send({
+                        "type": "thinking",
+                        "step": "generating_response",
+                        "label": "Generating coaching response…",
+                    }),
+                    loop,
+                )
+
             t0 = time.monotonic()
             try:
                 envelope = await asyncio.to_thread(
@@ -733,7 +775,7 @@ async def ws_coach(ws: WebSocket) -> None:
                     json.dumps(messages),
                     holder.options_json,
                     pcm,
-                    collector,
+                    progress_collector,
                 )
             except Exception as exc:
                 log.error("model call failed on %s/%d: %s",
@@ -759,6 +801,29 @@ async def ws_coach(ws: WebSocket) -> None:
                 "drill=%s/%d latency=%.2fs streamed=%dB envelope=%dB",
                 d.stage, d.index, latency, len(streamed), len(envelope),
             )
+
+            # Two cleanup beats before we move on:
+            # 1. Yield so any `generating_response` frame scheduled from
+            #    the token-callback thread drains BEFORE we send the
+            #    next step (otherwise the UI sees parsing_response, then
+            #    generating_response arrives late and rewinds the
+            #    progress list).
+            # 2. If the model never streamed a token (envelope-only
+            #    completion, no callback fired), emit the frame here so
+            #    the UI still shows the step transition.
+            await asyncio.sleep(0)
+            if not first_token_signalled:
+                await send({
+                    "type": "thinking",
+                    "step": "generating_response",
+                    "label": "Generating coaching response…",
+                })
+
+            await send({
+                "type": "thinking",
+                "step": "parsing_response",
+                "label": "Parsing model output…",
+            })
 
             valid = coach.validate_coach_json(coach.parse_coach_json(raw_for_parse))
             if not valid:
@@ -811,7 +876,15 @@ async def ws_coach(ws: WebSocket) -> None:
             # If `say` isn't available (Linux/CI), we just skip this
             # frame and the frontend falls back to speechSynthesis.
             spoken = ". ".join(p for p in (ack, feedback) if p).strip()
-            if spoken:
+            if spoken and HAS_SAY:
+                # Last visible step before audio actually starts playing.
+                # Gated on HAS_SAY so we don't promise voice synthesis on
+                # a host (Linux/CI) where `say` is missing.
+                await send({
+                    "type": "thinking",
+                    "step": "synthesizing_voice",
+                    "label": "Synthesizing voice with macOS say…",
+                })
                 wav = await asyncio.to_thread(_say_to_wav, spoken)
                 if wav is not None:
                     await send({
