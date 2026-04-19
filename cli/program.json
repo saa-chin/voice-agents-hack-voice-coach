@@ -1,247 +1,313 @@
 {
-  "program_name": "Parkinsons Speech Therapy - Self Guided",
-  "version": "1.0",
+  "program_name": "Parkinsons Speech Therapy - Lesson Library",
+  "version": "2.0",
   "structure": {
-    "default_flow": ["warmup", "glide", "counting", "main_task"]
+    "default_flow": ["main_task"]
   },
   "categories": [
     {
-      "id": "voice_loudness",
-      "name": "Voice Loudness & Breath Support",
-      "goal": "Improve vocal loudness and breath control",
+      "id": "words",
+      "name": "Words",
+      "goal": "Build loudness, clarity, and intent on single words.",
       "exercises": [
         {
-          "id": "vl_1",
-          "name": "Sustained Vowel Power",
+          "id": "L1",
+          "name": "Speak Strong City Names",
+          "lesson": {
+            "goal": "Increase vocal loudness and clarity using familiar, structured words.",
+            "instructions_for_agent": "Encourage the patient to speak louder and with intent. If speech is too soft, prompt: 'Say it with a strong voice.'",
+            "what_to_emphasize": [
+              "Speak with intent",
+              "Clear consonants",
+              "Full voice (not whispering)",
+              "Finish the word strongly"
+            ],
+            "common_mistakes": [
+              "Trailing off at the end",
+              "Speaking too softly",
+              "Blending syllables"
+            ],
+            "success_criteria": "Patient says each word clearly, loudly, and fully.",
+            "exercise_type": "repeat",
+            "difficulty": "easy"
+          },
           "phases": {
-            "warmup": {
-              "instructions": "Take a deep diaphragmatic breath and sustain 'Ahhh'",
-              "duration_sec": 5,
-              "repetitions": 3
-            },
-            "glide": {
-              "instructions": "Glide pitch from low to high to low using 'Ah'",
-              "repetitions": 3
-            },
-            "counting": {
-              "content": "1 to 10",
-              "instructions": "Count loudly and clearly",
+            "main_task": {
+              "content": ["New York", "London", "Paris", "Tokyo", "Sydney"],
+              "instructions": "Say each city name clearly and loudly. Think about the word before you say it. Use a strong voice, not a soft or fading voice.",
+              "focus": "Speak with intent; clear consonants; full voice; finish the word strongly.",
               "repetitions": 1
-            },
-            "main_task": {
-              "content": ["Ahhhhh"],
-              "instructions": "Hold the vowel loud and steady",
-              "focus": "Breath control and vocal strength",
-              "duration_sec": 5,
-              "repetitions": 10
             }
           }
         },
         {
-          "id": "vl_2",
-          "name": "Loud Word Repetition",
+          "id": "L3",
+          "name": "Everyday Action Words",
+          "lesson": {
+            "goal": "Strengthen clarity in commonly used words.",
+            "instructions_for_agent": "Reinforce clarity and pacing.",
+            "what_to_emphasize": [
+              "Intent before speaking",
+              "Clear endings"
+            ],
+            "common_mistakes": [
+              "Rushing",
+              "Dropping final sounds"
+            ],
+            "success_criteria": "Words are distinct and easy to understand.",
+            "exercise_type": "repeat",
+            "difficulty": "easy"
+          },
           "phases": {
-            "warmup": {
-              "instructions": "Deep breath and sustain 'Ah'",
-              "repetitions": 3
-            },
-            "glide": {
-              "instructions": "Pitch glide using 'Oo'",
-              "repetitions": 3
-            },
-            "counting": {
-              "content": "1 to 10",
-              "instructions": "Loud voice",
+            "main_task": {
+              "content": ["Help", "Stop", "Go", "Wait", "Come"],
+              "instructions": "Say each word clearly and with purpose.",
+              "focus": "Intent before speaking; clear endings.",
               "repetitions": 1
-            },
-            "main_task": {
-              "content": ["Hey", "Stop", "Hello", "Yes", "No"],
-              "instructions": "Say each word loudly with sharp clarity",
-              "focus": "Strong vocal initiation",
-              "repetitions": 5
             }
           }
         },
         {
-          "id": "vl_3",
-          "name": "Functional Phrases",
+          "id": "L7",
+          "name": "Long Words with Clarity",
+          "lesson": {
+            "goal": "Improve articulation across syllables.",
+            "what_to_emphasize": [
+              "Each syllable",
+              "Slow pacing"
+            ],
+            "common_mistakes": [
+              "Skipping syllables"
+            ],
+            "success_criteria": "All syllables are clearly spoken.",
+            "exercise_type": "repeat",
+            "difficulty": "medium"
+          },
           "phases": {
-            "warmup": { "instructions": "Deep breath + 'Ah'", "repetitions": 3 },
-            "glide": { "instructions": "Pitch glide", "repetitions": 3 },
-            "counting": { "content": "1-10", "instructions": "Loud", "repetitions": 1 },
             "main_task": {
-              "content": [
-                "I need help",
-                "Come here please",
-                "Turn on the light"
-              ],
-              "instructions": "Speak loudly as if addressing someone",
-              "focus": "Real-life communication",
-              "repetitions": 5
-            }
-          }
-        },
-        {
-          "id": "vl_4",
-          "name": "Distance Calling",
-          "phases": {
-            "warmup": { "instructions": "Breath + sustain", "repetitions": 3 },
-            "glide": { "instructions": "Pitch glide", "repetitions": 3 },
-            "counting": { "content": "1-10", "instructions": "Loud", "repetitions": 1 },
-            "main_task": {
-              "content": ["John!", "Hey!", "Excuse me!"],
-              "instructions": "Call out as if across a room",
-              "focus": "Projection",
-              "repetitions": 10
-            }
-          }
-        },
-        {
-          "id": "vl_5",
-          "name": "Breath + Sentence",
-          "phases": {
-            "warmup": { "instructions": "Deep breath", "repetitions": 3 },
-            "glide": { "instructions": "Pitch glide", "repetitions": 3 },
-            "counting": { "content": "1-10", "instructions": "Loud", "repetitions": 1 },
-            "main_task": {
-              "content": ["Good morning everyone"],
-              "instructions": "Say in one breath, loud and clear",
-              "focus": "Breath coordination",
-              "repetitions": 10
+              "content": ["California", "Mississippi", "Philadelphia"],
+              "instructions": "Break the word in your mind, then say it clearly.",
+              "focus": "Each syllable; slow pacing.",
+              "repetitions": 1
             }
           }
         }
       ]
     },
     {
-      "id": "prosody",
-      "name": "Pitch Variation & Prosody",
-      "goal": "Improve expressiveness and reduce monotone speech",
+      "id": "names",
+      "name": "Names",
+      "goal": "Project energy and emotional intent when addressing others.",
       "exercises": [
         {
-          "id": "pr_1",
-          "name": "Question vs Statement",
+          "id": "L2",
+          "name": "Say Names Clearly",
+          "lesson": {
+            "goal": "Improve articulation and emotional engagement using meaningful names.",
+            "instructions_for_agent": "Prompt for stronger voice if flat. Encourage emotional tone.",
+            "what_to_emphasize": [
+              "Energy in voice",
+              "Clear pronunciation",
+              "Calling tone"
+            ],
+            "common_mistakes": [
+              "Flat tone",
+              "Mumbling",
+              "Low volume"
+            ],
+            "success_criteria": "Names are spoken clearly and loudly with energy.",
+            "exercise_type": "repeat",
+            "difficulty": "easy"
+          },
           "phases": {
-            "warmup": { "instructions": "Sustain 'Ah'", "repetitions": 3 },
-            "glide": { "instructions": "Pitch glide", "repetitions": 3 },
-            "counting": { "content": "1-10", "instructions": "Loud", "repetitions": 1 },
             "main_task": {
-              "content": ["You are coming.", "You are coming?"],
-              "instructions": "Change tone for question vs statement",
-              "focus": "Intonation control",
-              "repetitions": 10
+              "content": ["Michael", "Sarah", "David", "Emily", "John"],
+              "instructions": "Say each name like you are calling someone across the room. Use energy and intent.",
+              "focus": "Energy in voice; clear pronunciation; calling tone.",
+              "repetitions": 1
             }
           }
         },
         {
-          "id": "pr_2",
-          "name": "Emotion Expression",
+          "id": "L6",
+          "name": "Call Out Names",
+          "lesson": {
+            "goal": "Increase vocal strength through emotional intent.",
+            "instructions_for_agent": "Encourage louder projection.",
+            "what_to_emphasize": [
+              "Projection",
+              "Emotion",
+              "Intent"
+            ],
+            "common_mistakes": [
+              "Monotone voice"
+            ],
+            "success_criteria": "Voice carries energy and intent.",
+            "exercise_type": "repeat",
+            "difficulty": "medium"
+          },
           "phases": {
-            "warmup": { "instructions": "Deep breath", "repetitions": 3 },
-            "glide": { "instructions": "Pitch glide", "repetitions": 3 },
-            "counting": { "content": "1-10", "instructions": "Loud", "repetitions": 1 },
             "main_task": {
-              "content": [
-                "I got a gift!",
-                "I lost my keys",
-                "That is amazing"
-              ],
-              "instructions": "Say each with different emotions",
-              "focus": "Emotional tone",
-              "repetitions": 5
+              "content": ["Anna!", "Tom!", "Lisa!", "Mark!"],
+              "instructions": "Say the name like you are calling someone.",
+              "focus": "Projection; emotion; intent.",
+              "repetitions": 1
             }
           }
         }
       ]
     },
     {
-      "id": "articulation",
-      "name": "Articulation & Clarity",
-      "goal": "Improve speech precision",
+      "id": "sentences",
+      "name": "Sentences",
+      "goal": "Produce clear, well-paced short sentences for daily communication.",
       "exercises": [
         {
-          "id": "ar_1",
-          "name": "Pa-Ta-Ka Drill",
+          "id": "L4",
+          "name": "Short Intent Sentences",
+          "lesson": {
+            "goal": "Develop clarity and breath support across short phrases.",
+            "instructions_for_agent": "Ensure full sentence completion.",
+            "what_to_emphasize": [
+              "Complete sentence",
+              "Strong start and end",
+              "No trailing off"
+            ],
+            "common_mistakes": [
+              "Stopping midway",
+              "Weak ending"
+            ],
+            "success_criteria": "Sentence is spoken fully and clearly.",
+            "exercise_type": "repeat",
+            "difficulty": "medium"
+          },
           "phases": {
-            "warmup": { "instructions": "Deep breath", "repetitions": 3 },
-            "glide": { "instructions": "Pitch glide", "repetitions": 3 },
-            "counting": { "content": "1-10", "instructions": "Clear speech", "repetitions": 1 },
-            "main_task": {
-              "content": ["Pa-Ta-Ka"],
-              "instructions": "Exaggerate mouth movements",
-              "focus": "Tongue and lip coordination",
-              "repetitions": 20
-            }
-          }
-        },
-        {
-          "id": "ar_2",
-          "name": "Minimal Pairs",
-          "phases": {
-            "warmup": { "instructions": "Breath + sustain", "repetitions": 3 },
-            "glide": { "instructions": "Pitch glide", "repetitions": 3 },
-            "counting": { "content": "1-10", "instructions": "Clear speech", "repetitions": 1 },
-            "main_task": {
-              "content": ["Pat-Bat", "Ten-Den"],
-              "instructions": "Clearly differentiate sounds",
-              "focus": "Sound precision",
-              "repetitions": 10
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": "functional",
-      "name": "Functional Speech",
-      "goal": "Apply speech in real-life scenarios",
-      "exercises": [
-        {
-          "id": "fn_1",
-          "name": "Word Reading",
-          "phases": {
-            "warmup": { "instructions": "Deep breath", "repetitions": 3 },
-            "glide": { "instructions": "Pitch glide", "repetitions": 3 },
-            "counting": { "content": "1-10", "instructions": "Loud", "repetitions": 1 },
-            "main_task": {
-              "content": ["cat", "dog", "sun", "book", "chair"],
-              "instructions": "Read loudly and clearly",
-              "focus": "Clarity and loudness",
-              "repetitions": 5
-            }
-          }
-        },
-        {
-          "id": "fn_2",
-          "name": "Sentence Reading",
-          "phases": {
-            "warmup": { "instructions": "Deep breath", "repetitions": 3 },
-            "glide": { "instructions": "Pitch glide", "repetitions": 3 },
-            "counting": { "content": "1-10", "instructions": "Loud", "repetitions": 1 },
             "main_task": {
               "content": [
-                "The dog runs fast.",
-                "I like my coffee.",
-                "It is a sunny day."
+                "I am ready.",
+                "I feel good.",
+                "I need help.",
+                "I am here."
               ],
-              "instructions": "Read clearly with pauses",
-              "focus": "Breath and phrasing",
-              "repetitions": 5
+              "instructions": "Think, then speak the full sentence clearly.",
+              "focus": "Complete sentence; strong start and end; no trailing off.",
+              "repetitions": 1
             }
           }
         },
         {
-          "id": "fn_3",
-          "name": "Spelling Exercise",
+          "id": "L5",
+          "name": "Give Clear Directions",
+          "lesson": {
+            "goal": "Improve functional communication clarity.",
+            "instructions_for_agent": "Encourage slower pacing.",
+            "what_to_emphasize": [
+              "Clarity",
+              "Deliberate pacing"
+            ],
+            "common_mistakes": [
+              "Rushing",
+              "Blending words"
+            ],
+            "success_criteria": "Sentence is understandable on first attempt.",
+            "exercise_type": "repeat",
+            "difficulty": "medium"
+          },
           "phases": {
-            "warmup": { "instructions": "Deep breath", "repetitions": 3 },
-            "glide": { "instructions": "Pitch glide", "repetitions": 3 },
-            "counting": { "content": "1-10", "instructions": "Loud", "repetitions": 1 },
             "main_task": {
-              "content": ["CAT", "HOUSE", "WATER", "PHONE"],
-              "instructions": "Spell each letter clearly",
-              "focus": "Letter articulation",
-              "repetitions": 2
+              "content": [
+                "Turn left here.",
+                "Go straight ahead.",
+                "Stop at the door."
+              ],
+              "instructions": "Speak clearly as if giving instructions.",
+              "focus": "Clarity; deliberate pacing.",
+              "repetitions": 1
+            }
+          }
+        },
+        {
+          "id": "L8",
+          "name": "Ask Questions Clearly",
+          "lesson": {
+            "goal": "Improve intonation and expressiveness.",
+            "what_to_emphasize": [
+              "Pitch variation",
+              "Clear phrasing"
+            ],
+            "common_mistakes": [
+              "Flat tone"
+            ],
+            "success_criteria": "Question sounds natural and clear.",
+            "exercise_type": "repeat",
+            "difficulty": "medium"
+          },
+          "phases": {
+            "main_task": {
+              "content": [
+                "Are you ready?",
+                "Where are you?",
+                "Can you help me?"
+              ],
+              "instructions": "Raise your tone at the end like a question.",
+              "focus": "Pitch variation; clear phrasing.",
+              "repetitions": 1
+            }
+          }
+        },
+        {
+          "id": "L9",
+          "name": "Daily Conversation",
+          "lesson": {
+            "goal": "Prepare for real-world speaking.",
+            "what_to_emphasize": [
+              "Natural pacing",
+              "Clarity"
+            ],
+            "common_mistakes": [
+              "Speaking too fast"
+            ],
+            "success_criteria": "Speech is understandable and natural.",
+            "exercise_type": "repeat",
+            "difficulty": "medium"
+          },
+          "phases": {
+            "main_task": {
+              "content": [
+                "How was your day?",
+                "I had a good day.",
+                "Let's go outside."
+              ],
+              "instructions": "Speak naturally but clearly.",
+              "focus": "Natural pacing; clarity.",
+              "repetitions": 1
+            }
+          }
+        },
+        {
+          "id": "L10",
+          "name": "Think and Speak",
+          "lesson": {
+            "goal": "Combine thinking and speaking with intent.",
+            "instructions_for_agent": "Pause before prompting to encourage thinking.",
+            "what_to_emphasize": [
+              "Intent",
+              "Clear speech after thinking"
+            ],
+            "common_mistakes": [
+              "Speaking without thinking",
+              "Rushed speech"
+            ],
+            "success_criteria": "Patient pauses, then speaks clearly.",
+            "exercise_type": "prompt_response",
+            "difficulty": "hard"
+          },
+          "phases": {
+            "main_task": {
+              "content": ["What did you eat today?"],
+              "instructions": "Think about your answer before speaking.",
+              "focus": "Intent; clear speech after thinking.",
+              "repetitions": 1
             }
           }
         }

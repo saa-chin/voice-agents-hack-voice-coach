@@ -187,13 +187,22 @@ class TestRmsToDbfs:
 class TestBuildPrompt:
     @pytest.fixture
     def warmup_drill(self):
-        # First drill of vl_1 is a warmup.
-        drills = content.drills_for_exercise("vl_1")
-        return next(d for d in drills if d.stage == "warmup")
+        # The current lesson library is main-task-only, so we hand-build a
+        # minimal warmup drill with no focus / no note — preserving coverage
+        # of the "instruction-only phase" rendering path.
+        return content.Drill(
+            stage="warmup",
+            index=0,
+            prompt="Take a deep breath and sustain 'Ahhh'.",
+            note="",
+            target_dbfs=content.DEFAULT_TARGET_DBFS_BY_STAGE["warmup"],
+            exercise_name="Speak Strong City Names",
+            focus="",
+        )
 
     @pytest.fixture
     def main_task_drill(self):
-        drills = content.drills_for_exercise("vl_1")
+        drills = content.drills_for_exercise("L1")
         return next(d for d in drills if d.stage == "main_task")
 
     def test_includes_drill_prompt_text(self, warmup_drill):
@@ -227,7 +236,7 @@ class TestBuildPrompt:
 
     def test_includes_exercise_name(self, warmup_drill):
         out = coach.build_prompt(warmup_drill, -20.0, 1.0)
-        assert "Sustained Vowel Power" in out
+        assert "Speak Strong City Names" in out
 
     def test_includes_focus_when_present(self, main_task_drill):
         out = coach.build_prompt(main_task_drill, -15.0, 5.0)

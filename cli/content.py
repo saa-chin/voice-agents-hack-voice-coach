@@ -9,7 +9,7 @@ Public API (kept stable for downstream callers):
   - default_drill_set()    -> list[Drill]    every drill in the program,
                                               flattened in
                                               category → exercise → phase order
-                                              (currently 69 steps).
+                                              (currently 36 steps).
                                               Override scope with env vars
                                               for shorter targeted sessions.
   - all_drills()           -> list[Drill]    same as default with no env
@@ -19,11 +19,11 @@ Public API (kept stable for downstream callers):
   - load_program()         -> Program        full structured program
 
 Environment overrides (highest priority first):
-  - VOICE_COACH_EXERCISE   pick a single exercise id (e.g. "ar_1")
-                           → 4-8 drills, ~1-2 min
-  - VOICE_COACH_CATEGORY   pick a single category id (e.g. "voice_loudness")
-                           → 9-28 drills depending on category
-  - (neither set)          full program → 69 drills, ~15-20 min
+  - VOICE_COACH_EXERCISE   pick a single lesson id (e.g. "L1")
+                           → 1-5 drills, ~30-90 sec
+  - VOICE_COACH_CATEGORY   pick a single category id (e.g. "words")
+                           → 9-14 drills depending on category
+  - (neither set)          full program → 36 drills, ~8-10 min
   - VOICE_COACH_PROGRAM    path to a custom program JSON file
 
 `target_dbfs` is a relative loudness target (dBFS), NOT a calibrated
@@ -285,11 +285,10 @@ def drills_for_category(category_id: str) -> list[Drill]:
 def all_drills() -> list[Drill]:
     """Every drill in the program, in category → exercise → phase order.
 
-    Currently 69 steps:
-      voice_loudness  28  (vl_1=4, vl_2=8, vl_3=6, vl_4=6, vl_5=4)
-      prosody         11  (pr_1=5, pr_2=6)
-      articulation     9  (ar_1=4, ar_2=5)
-      functional      21  (fn_1=8, fn_2=6, fn_3=7)
+    Currently 36 steps:
+      words       13  (L1=5, L3=5, L7=3)
+      names        9  (L2=5, L6=4)
+      sentences   14  (L4=4, L5=3, L8=3, L9=3, L10=1)
     """
     out: list[Drill] = []
     for cat, ex in all_exercises():
@@ -301,11 +300,11 @@ def default_drill_set() -> list[Drill]:
     """Default sequence: the entire clinical program.
 
     Override with one of these env vars (highest priority first):
-      VOICE_COACH_EXERCISE  →  one exercise (e.g. "ar_1")
-      VOICE_COACH_CATEGORY  →  one category (e.g. "voice_loudness")
+      VOICE_COACH_EXERCISE  →  one lesson (e.g. "L1")
+      VOICE_COACH_CATEGORY  →  one category (e.g. "words")
 
     With nothing set, returns every drill from every category — about
-    69 steps, a full 15-20 min therapy session.
+    36 steps, an ~8-10 min therapy session.
     """
     eid = os.environ.get("VOICE_COACH_EXERCISE", "").strip()
     if eid:

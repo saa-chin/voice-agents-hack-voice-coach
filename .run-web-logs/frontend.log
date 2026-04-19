@@ -1,14 +1,10 @@
-23:18:15 [types] Generated 0ms
+01:03:03 [types] Generated 1ms
 
- astro  v4.16.19 ready in 191 ms
+ astro  v4.16.19 ready in 247 ms
 
 ┃ Local    http://127.0.0.1:4321/
 
-23:18:15 watching for file changes...
-23:18:16 [200] / 4ms
-23:18:16 [200] / 4ms
-23:18:16 [200] / 2ms
-23:18:33 [200] / 2ms
-23:18:37 [200] / 3ms
-23:18:38 [200] / 2ms
-23:19:27 [200] / 4ms
+01:03:03 watching for file changes...
+01:03:05 [200] / 3ms
+01:03:05 [200] / 13ms
+01:03:10 [200] / 3ms

@@ -200,13 +200,14 @@ def test_ws_happy_path_first_turn_advance(server):
             drill0 = ws.receive_json()
             assert drill0["type"] == "drill"
             assert drill0["position"] == 0
-            # vl_1 default exercise has 4 phases (warmup → glide → counting → main_task)
-            assert drill0["total"] >= 4
-            assert drill0["stage"] == "warmup"
+            # First drill of the default program is L1 (Speak Strong City Names),
+            # a main-task-only lesson with 5 city-name prompts.
+            assert drill0["total"] >= 5
+            assert drill0["stage"] == "main_task"
             # Richer context fields are now sent on every drill message.
-            assert drill0["exercise_id"] == "vl_1"
-            assert drill0["exercise_name"] == "Sustained Vowel Power"
-            assert drill0["category_id"] == "voice_loudness"
+            assert drill0["exercise_id"] == "L1"
+            assert drill0["exercise_name"] == "Speak Strong City Names"
+            assert drill0["category_id"] == "words"
 
             ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
 
@@ -409,14 +410,14 @@ def test_ws_model_inference_error_continues_session(server):
 def test_ws_completes_session_after_last_drill(server, monkeypatch):
     """Walking through all drills should end with session_done containing summary.
 
-    Scoped to a single exercise (vl_1, 4 drills) via env var so the test
-    stays fast and focused on the protocol — the full 69-drill walk is
-    already covered structurally by test_content.TestAllDrills.
+    Scoped to a single lesson (L7, 3 drills) via env var so the test stays
+    fast and focused on the protocol — the full 36-drill walk is already
+    covered structurally by test_content.TestAllDrills.
     """
-    monkeypatch.setenv("VOICE_COACH_EXERCISE", "vl_1")
+    monkeypatch.setenv("VOICE_COACH_EXERCISE", "L7")
     import content
     total = len(content.default_drill_set())
-    assert total == 4
+    assert total == 3
 
     with TestClient(server["app"]) as client:
         with client.websocket_connect("/ws/coach") as ws:
