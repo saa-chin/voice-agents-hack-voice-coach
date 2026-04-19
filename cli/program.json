@@ -33,7 +33,7 @@
           },
           "phases": {
             "main_task": {
-              "content": ["New York", "London", "Paris", "Tokyo", "Sydney"],
+              "content": ["New York", "London", "Paris"],
               "instructions": "Say each city name clearly and loudly. Think about the word before you say it. Use a strong voice, not a soft or fading voice.",
               "focus": "Speak with intent; clear consonants; full voice; finish the word strongly.",
               "repetitions": 1
@@ -60,7 +60,7 @@
           },
           "phases": {
             "main_task": {
-              "content": ["Help", "Stop", "Go", "Wait", "Come"],
+              "content": ["Help", "Stop"],
               "instructions": "Say each word clearly and with purpose.",
               "focus": "Intent before speaking; clear endings.",
               "repetitions": 1
@@ -85,7 +85,7 @@
           },
           "phases": {
             "main_task": {
-              "content": ["California", "Mississippi", "Philadelphia"],
+              "content": ["California", "Mississippi"],
               "instructions": "Break the word in your mind, then say it clearly.",
               "focus": "Each syllable; slow pacing.",
               "repetitions": 1
@@ -121,7 +121,7 @@
           },
           "phases": {
             "main_task": {
-              "content": ["Michael", "Sarah", "David", "Emily", "John"],
+              "content": ["Michael", "Sarah"],
               "instructions": "Say each name like you are calling someone across the room. Use energy and intent.",
               "focus": "Energy in voice; clear pronunciation; calling tone.",
               "repetitions": 1
@@ -148,7 +148,7 @@
           },
           "phases": {
             "main_task": {
-              "content": ["Anna!", "Tom!", "Lisa!", "Mark!"],
+              "content": ["Anna!", "Tom!"],
               "instructions": "Say the name like you are calling someone.",
               "focus": "Projection; emotion; intent.",
               "repetitions": 1
@@ -185,9 +185,7 @@
             "main_task": {
               "content": [
                 "I am ready.",
-                "I feel good.",
-                "I need help.",
-                "I am here."
+                "I feel good."
               ],
               "instructions": "Think, then speak the full sentence clearly.",
               "focus": "Complete sentence; strong start and end; no trailing off.",
@@ -217,8 +215,7 @@
             "main_task": {
               "content": [
                 "Turn left here.",
-                "Go straight ahead.",
-                "Stop at the door."
+                "Go straight ahead."
               ],
               "instructions": "Speak clearly as if giving instructions.",
               "focus": "Clarity; deliberate pacing.",
@@ -246,8 +243,7 @@
             "main_task": {
               "content": [
                 "Are you ready?",
-                "Where are you?",
-                "Can you help me?"
+                "Where are you?"
               ],
               "instructions": "Raise your tone at the end like a question.",
               "focus": "Pitch variation; clear phrasing.",
@@ -275,8 +271,7 @@
             "main_task": {
               "content": [
                 "How was your day?",
-                "I had a good day.",
-                "Let's go outside."
+                "I had a good day."
               ],
               "instructions": "Speak naturally but clearly.",
               "focus": "Natural pacing; clarity.",
