@@ -25,6 +25,7 @@ import {
   type ServerMessage,
   type SummaryMsg,
 } from '../lib/ws';
+import LivePitchDbMeter from './LivePitchDbMeter';
 
 const BACKEND_PORT =
   (import.meta as any).env?.PUBLIC_BACKEND_PORT ?? '8765';
@@ -952,11 +953,10 @@ function SessionView({
           />
         </div>
         <div className="flex flex-col gap-4">
-          <LiveAnalyzer
+          <LivePitchDbMeter
             analysis={analysis}
-            target_dbfs={drill.target_dbfs}
-            phase={phase}
-            liveScore={liveScore}
+            targetDbfs={drill.target_dbfs}
+            active={phase === 'recording'}
           />
           {showTranscript && (
             <LiveTranscript transcript={transcript} phase={phase} />
