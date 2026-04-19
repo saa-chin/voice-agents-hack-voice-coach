@@ -2,7 +2,7 @@
 
 The clinical program (categories → exercises → phases) is loaded from
 `cli/program.json` — the canonical, single source of truth shared by the
-CLI, the FastAPI server, and (manually mirrored) the mobile app.
+CLI and the FastAPI server.
 
 Public API (kept stable for downstream callers):
   - Drill                  dataclass — one step in the coach loop
