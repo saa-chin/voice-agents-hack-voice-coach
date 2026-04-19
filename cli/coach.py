@@ -96,13 +96,13 @@ You will hear their attempt as audio. Do these in order:
 
 2. Decide whether what you heard matches what was asked. Set
    "metrics_observed.matched_prompt" accordingly.
-   - For warm-up / pitch-glide / sustained vowels, loose vowel matches
-     count (e.g. "ah" ~ "aaah", "oo" ~ "ooh").
-   - For counting (1 to 10), the digits must be present in order.
-   - For words, phrases and sentences, the key content words must be
+   - For single words and names, the target word must be recognisable
+     (minor mispronunciations are fine if intent is clear).
+   - For short sentences and questions, the key content words must be
      present (close paraphrases are fine if intent is preserved).
-   - For Pa-Ta-Ka style articulation drills, repeat-syllable patterns
-     count even if the model can't fully transcribe each token.
+   - For a "prompt_response" style drill (the prompt is a question like
+     "What did you eat today?"), any on-topic answer counts as a match —
+     you're judging delivery, not correctness of the answer.
 
 3. If matched_prompt is FALSE: set "next_action" to "retry" and have
    "feedback" gently say what you heard and ask them to try again.

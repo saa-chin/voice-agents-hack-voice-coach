@@ -15,31 +15,39 @@ class TestProgramLoading:
     def test_loads_program_from_json(self):
         prog = content.load_program()
         assert prog.program_name.startswith("Parkinsons")
-        assert prog.version == "1.0"
-        assert prog.default_flow == ("warmup", "glide", "counting", "main_task")
+        assert prog.version == "2.0"
+        assert prog.default_flow == ("main_task",)
 
-    def test_program_has_all_four_categories(self):
+    def test_program_has_all_three_categories(self):
         prog = content.load_program()
         ids = [c.id for c in prog.categories]
-        assert ids == ["voice_loudness", "prosody", "articulation", "functional"]
+        assert ids == ["words", "names", "sentences"]
 
-    def test_voice_loudness_has_five_exercises(self):
-        cat = content.find_category("voice_loudness")
-        assert len(cat.exercises) == 5
-        assert [e.id for e in cat.exercises] == ["vl_1", "vl_2", "vl_3", "vl_4", "vl_5"]
+    def test_words_has_three_lessons(self):
+        cat = content.find_category("words")
+        assert len(cat.exercises) == 3
+        assert [e.id for e in cat.exercises] == ["L1", "L3", "L7"]
 
-    def test_total_exercise_count(self):
+    def test_names_has_two_lessons(self):
+        cat = content.find_category("names")
+        assert [e.id for e in cat.exercises] == ["L2", "L6"]
+
+    def test_sentences_has_five_lessons(self):
+        cat = content.find_category("sentences")
+        assert [e.id for e in cat.exercises] == ["L4", "L5", "L8", "L9", "L10"]
+
+    def test_total_lesson_count(self):
         prog = content.load_program()
         total = sum(len(c.exercises) for c in prog.categories)
-        # 5 + 2 + 2 + 3 = 12
-        assert total == 12
+        # 3 + 2 + 5 = 10
+        assert total == 10
 
-    def test_each_exercise_has_all_default_phases(self):
+    def test_each_lesson_has_main_task_phase(self):
         prog = content.load_program()
         for cat in prog.categories:
             for ex in cat.exercises:
                 phase_names = [p.name for p in ex.phases]
-                assert phase_names == list(prog.default_flow), \
+                assert phase_names == ["main_task"], \
                     f"{ex.id} has phases {phase_names}"
 
     def test_load_program_is_cached(self):
@@ -119,53 +127,54 @@ class TestDrillDataclass:
 # ---- Flattening: exercise → drills --------------------------------------
 
 class TestDrillsForExercise:
-    def test_vl_1_flattens_to_four_drills(self):
-        drills = content.drills_for_exercise("vl_1")
-        # warmup + glide + counting + main_task (1 content item) = 4
-        assert len(drills) == 4
-        stages = [d.stage for d in drills]
-        assert stages == ["warmup", "glide", "counting", "main_task"]
+    def test_L1_unrolls_to_five_drills(self):
+        drills = content.drills_for_exercise("L1")
+        # main_task with 5 content items (prompt + 4 variations) = 5
+        assert len(drills) == 5
+        assert all(d.stage == "main_task" for d in drills)
+        assert [d.prompt for d in drills] == [
+            "New York", "London", "Paris", "Tokyo", "Sydney",
+        ]
 
-    def test_vl_2_unrolls_main_task_content(self):
-        drills = content.drills_for_exercise("vl_2")
-        # warmup + glide + counting + 5 main_task content items = 8
-        assert len(drills) == 8
-        main_tasks = [d for d in drills if d.stage == "main_task"]
-        assert [d.prompt for d in main_tasks] == ["Hey", "Stop", "Hello", "Yes", "No"]
+    def test_L3_unrolls_everyday_action_words(self):
+        drills = content.drills_for_exercise("L3")
+        assert [d.prompt for d in drills] == [
+            "Help", "Stop", "Go", "Wait", "Come",
+        ]
 
-    def test_warmup_drill_uses_instruction_as_prompt(self):
-        drills = content.drills_for_exercise("vl_1")
-        warmup = drills[0]
-        assert warmup.stage == "warmup"
-        # No explicit content → instruction text becomes the prompt.
-        assert "deep diaphragmatic breath" in warmup.prompt
-        assert warmup.note == ""
+    def test_L7_has_three_drills(self):
+        drills = content.drills_for_exercise("L7")
+        assert [d.prompt for d in drills] == [
+            "California", "Mississippi", "Philadelphia",
+        ]
+
+    def test_L10_prompt_response_has_single_drill(self):
+        drills = content.drills_for_exercise("L10")
+        assert len(drills) == 1
+        assert drills[0].prompt == "What did you eat today?"
 
     def test_main_task_drill_carries_focus(self):
-        drills = content.drills_for_exercise("vl_1")
-        main = next(d for d in drills if d.stage == "main_task")
-        assert main.focus == "Breath control and vocal strength"
-        assert main.target_repetitions == 10
-        assert main.target_duration_sec == 5
+        drills = content.drills_for_exercise("L1")
+        main = drills[0]
+        assert "clear consonants" in main.focus.lower()
+        assert main.target_repetitions == 1
 
-    def test_counting_uses_content_as_prompt_with_instruction_as_note(self):
-        drills = content.drills_for_exercise("vl_1")
-        counting = next(d for d in drills if d.stage == "counting")
-        assert counting.prompt == "1 to 10"
-        assert counting.note == "Count loudly and clearly"
+    def test_instructions_become_note(self):
+        drills = content.drills_for_exercise("L1")
+        # When a phase has explicit content, instructions become the note.
+        assert drills[0].note.startswith("Say each city name clearly")
 
     def test_each_drill_has_category_and_exercise_metadata(self):
-        for d in content.drills_for_exercise("vl_1"):
-            assert d.category_id == "voice_loudness"
-            assert d.category_name == "Voice Loudness & Breath Support"
-            assert d.exercise_id == "vl_1"
-            assert d.exercise_name == "Sustained Vowel Power"
+        for d in content.drills_for_exercise("L1"):
+            assert d.category_id == "words"
+            assert d.category_name == "Words"
+            assert d.exercise_id == "L1"
+            assert d.exercise_name == "Speak Strong City Names"
 
-    def test_target_dbfs_varies_by_stage(self):
-        drills = content.drills_for_exercise("vl_1")
-        by_stage = {d.stage: d.target_dbfs for d in drills}
-        # main_task should be louder (higher dBFS, less negative) than warmup.
-        assert by_stage["main_task"] > by_stage["warmup"]
+    def test_target_dbfs_uses_main_task_level(self):
+        drills = content.drills_for_exercise("L1")
+        for d in drills:
+            assert d.target_dbfs == content.DEFAULT_TARGET_DBFS_BY_STAGE["main_task"]
 
     def test_unknown_exercise_raises_keyerror(self):
         with pytest.raises(KeyError):
@@ -175,22 +184,25 @@ class TestDrillsForExercise:
 # ---- drills_for_category ------------------------------------------------
 
 class TestDrillsForCategory:
-    def test_voice_loudness_total_drills(self):
-        drills = content.drills_for_category("voice_loudness")
-        # vl_1: 4, vl_2: 8, vl_3: 6, vl_4: 6, vl_5: 4 → 28
-        assert len(drills) == 28
+    def test_words_total_drills(self):
+        drills = content.drills_for_category("words")
+        # L1: 5, L3: 5, L7: 3 → 13
+        assert len(drills) == 13
 
-    def test_articulation_pa_ta_ka_unrolls_correctly(self):
-        drills = content.drills_for_category("articulation")
-        ar1_main = [d for d in drills if d.exercise_id == "ar_1" and d.stage == "main_task"]
-        assert len(ar1_main) == 1
-        assert ar1_main[0].prompt == "Pa-Ta-Ka"
-        assert ar1_main[0].focus == "Tongue and lip coordination"
+    def test_names_total_drills(self):
+        drills = content.drills_for_category("names")
+        # L2: 5, L6: 4 → 9
+        assert len(drills) == 9
 
-    def test_functional_word_reading_unrolls_5_words(self):
-        drills = content.drills_for_category("functional")
-        fn1_main = [d for d in drills if d.exercise_id == "fn_1" and d.stage == "main_task"]
-        assert [d.prompt for d in fn1_main] == ["cat", "dog", "sun", "book", "chair"]
+    def test_sentences_total_drills(self):
+        drills = content.drills_for_category("sentences")
+        # L4: 4, L5: 3, L8: 3, L9: 3, L10: 1 → 14
+        assert len(drills) == 14
+
+    def test_names_L6_prompts_include_exclamation(self):
+        drills = content.drills_for_category("names")
+        l6_prompts = [d.prompt for d in drills if d.exercise_id == "L6"]
+        assert l6_prompts == ["Anna!", "Tom!", "Lisa!", "Mark!"]
 
     def test_unknown_category_raises_keyerror(self):
         with pytest.raises(KeyError):
@@ -204,13 +216,13 @@ class TestDefaultDrillSet:
         monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
         monkeypatch.delenv("VOICE_COACH_CATEGORY", raising=False)
         drills = content.default_drill_set()
-        # Full clinical program: 28 + 11 + 9 + 21 = 69
-        assert len(drills) == 69
-        # All four categories appear.
+        # Full program: 13 + 9 + 14 = 36
+        assert len(drills) == 36
+        # All three categories appear.
         cats = {d.category_id for d in drills}
-        assert cats == {"voice_loudness", "prosody", "articulation", "functional"}
-        # All 12 exercises appear.
-        assert len({d.exercise_id for d in drills}) == 12
+        assert cats == {"words", "names", "sentences"}
+        # All 10 lessons appear.
+        assert len({d.exercise_id for d in drills}) == 10
 
     def test_default_drills_are_in_program_order(self, monkeypatch):
         monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
@@ -221,22 +233,22 @@ class TestDefaultDrillSet:
         for d in drills:
             if not seen or seen[-1] != d.category_id:
                 seen.append(d.category_id)
-        assert seen == ["voice_loudness", "prosody", "articulation", "functional"]
+        assert seen == ["words", "names", "sentences"]
 
     def test_exercise_override_beats_category_and_default(self, monkeypatch):
-        monkeypatch.setenv("VOICE_COACH_CATEGORY", "voice_loudness")
-        monkeypatch.setenv("VOICE_COACH_EXERCISE", "ar_1")
+        monkeypatch.setenv("VOICE_COACH_CATEGORY", "words")
+        monkeypatch.setenv("VOICE_COACH_EXERCISE", "L6")
         drills = content.default_drill_set()
-        # Exercise override wins.
-        assert all(d.exercise_id == "ar_1" for d in drills)
+        # Lesson override wins.
+        assert all(d.exercise_id == "L6" for d in drills)
         assert len(drills) == 4
 
     def test_category_override_returns_only_that_category(self, monkeypatch):
         monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
-        monkeypatch.setenv("VOICE_COACH_CATEGORY", "articulation")
+        monkeypatch.setenv("VOICE_COACH_CATEGORY", "names")
         drills = content.default_drill_set()
-        assert all(d.category_id == "articulation" for d in drills)
-        # ar_1: 4, ar_2: 5 → 9
+        assert all(d.category_id == "names" for d in drills)
+        # L2: 5, L6: 4 → 9
         assert len(drills) == 9
 
     def test_unknown_exercise_override_raises(self, monkeypatch):
@@ -254,7 +266,7 @@ class TestDefaultDrillSet:
 class TestAllDrills:
     def test_all_drills_returns_full_program(self):
         drills = content.all_drills()
-        assert len(drills) == 69
+        assert len(drills) == 36
 
     def test_all_drills_per_category_count(self):
         drills = content.all_drills()
@@ -262,10 +274,9 @@ class TestAllDrills:
         for d in drills:
             per_cat[d.category_id] = per_cat.get(d.category_id, 0) + 1
         assert per_cat == {
-            "voice_loudness": 28,
-            "prosody": 11,
-            "articulation": 9,
-            "functional": 21,
+            "words": 13,
+            "names": 9,
+            "sentences": 14,
         }
 
     def test_all_drills_per_exercise_count(self):
@@ -274,25 +285,25 @@ class TestAllDrills:
         for d in drills:
             per_ex[d.exercise_id] = per_ex.get(d.exercise_id, 0) + 1
         assert per_ex == {
-            "vl_1": 4, "vl_2": 8, "vl_3": 6, "vl_4": 6, "vl_5": 4,
-            "pr_1": 5, "pr_2": 6,
-            "ar_1": 4, "ar_2": 5,
-            "fn_1": 8, "fn_2": 6, "fn_3": 7,
+            "L1": 5, "L3": 5, "L7": 3,
+            "L2": 5, "L6": 4,
+            "L4": 4, "L5": 3, "L8": 3, "L9": 3, "L10": 1,
         }
 
-    def test_all_drills_first_is_warmup_of_vl_1(self):
+    def test_all_drills_first_is_L1_new_york(self):
         drills = content.all_drills()
         first = drills[0]
-        assert first.stage == "warmup"
-        assert first.exercise_id == "vl_1"
-        assert first.category_id == "voice_loudness"
+        assert first.stage == "main_task"
+        assert first.exercise_id == "L1"
+        assert first.category_id == "words"
+        assert first.prompt == "New York"
 
-    def test_all_drills_last_is_main_task_of_fn_3(self):
+    def test_all_drills_last_is_L10_prompt(self):
         drills = content.all_drills()
         last = drills[-1]
         assert last.stage == "main_task"
-        assert last.exercise_id == "fn_3"
-        assert last.prompt == "PHONE"
+        assert last.exercise_id == "L10"
+        assert last.prompt == "What did you eat today?"
 
     def test_every_drill_has_exercise_metadata(self):
         for d in content.all_drills():
@@ -330,15 +341,15 @@ class TestEmptyProgram:
 class TestQueryHelpers:
     def test_all_exercises_returns_all_pairs(self):
         pairs = content.all_exercises()
-        assert len(pairs) == 12
+        assert len(pairs) == 10
         for cat, ex in pairs:
             assert isinstance(cat, content.Category)
             assert isinstance(ex, content.Exercise)
 
     def test_find_exercise_returns_correct_pair(self):
-        cat, ex = content.find_exercise("pr_2")
-        assert cat.id == "prosody"
-        assert ex.name == "Emotion Expression"
+        cat, ex = content.find_exercise("L8")
+        assert cat.id == "sentences"
+        assert ex.name == "Ask Questions Clearly"
 
     def test_find_exercise_unknown_raises(self):
         with pytest.raises(KeyError):
