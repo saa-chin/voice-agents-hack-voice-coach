@@ -420,7 +420,30 @@ export default function LessonPlayer({ lesson, lessonIndex, phaseKey }: LessonPl
             {error || getStatusLabel(isRecording, loading, Boolean(result), formatLabel(phaseKey))}
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 14, flexWrap: 'wrap' }}>
+            <button
+              onClick={() => {
+                if (previousHref) {
+                  router.push(previousHref);
+                }
+              }}
+              type="button"
+              disabled={!previousHref || isRecording || loading}
+              style={{
+                minWidth: 180,
+                padding: '14px 22px',
+                borderRadius: 999,
+                border: '1px solid var(--card-border)',
+                background: !previousHref || isRecording || loading ? '#202846' : '#121a31',
+                color: 'var(--text)',
+                fontSize: 20,
+                fontWeight: 600,
+                opacity: !previousHref || isRecording || loading ? 0.6 : 1,
+              }}
+            >
+              Previous
+            </button>
+
             <button
               onClick={() => router.push(nextHref)}
               type="button"
