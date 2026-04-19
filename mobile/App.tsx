@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   PermissionsAndroid,
   Platform,
@@ -21,25 +20,19 @@ import { NitroModules } from 'react-native-nitro-modules';
 import AudioRecord from 'react-native-audio-record';
 import { Buffer } from 'buffer';
 
-// Single-model pipeline: Gemma 4 handles both audio understanding and the
-// response in one forward pass — per the Cactus blog, Gemma 4 reasons directly
-// over the audio modality (no separate ASR step).
+// Single-model pipeline: Gemma 4 handles audio understanding directly — per
+// the Cactus blog, the audio conformer feeds the same residual stream as text,
+// so streamTranscribe routes PCM chunks straight into Gemma's audio path.
 // https://docs.cactuscompute.com/latest/blog/gemma4/
 //
-// We load it via the STT hook because cactus-react-native v1.13.0 doesn't yet
-// expose audio input on the LM hook (CactusLMMessage has no audio field), but
-// the underlying engine's transcribe() accepts any model and routes audio to
-// the model's native audio path.
+// We use the STT hook because cactus-react-native v1.13.0 doesn't yet expose
+// audio input on CactusLM. The streaming API
+// (streamTranscribeStart/Process/Stop) is model-agnostic and works with any
+// model the engine has loaded.
 const MODEL_SLUG = 'gemma-4-e2b-it';
 const QUANT: 'int4' | 'int8' = 'int4';
 const INTERNAL_NAME = `${MODEL_SLUG}-${QUANT}`;
 const WEIGHTS_URL = `https://huggingface.co/Cactus-Compute/gemma-4-E2B-it/resolve/v1.13/weights/${INTERNAL_NAME}.zip`;
-
-// Transcription-only mode: ask Gemma 4 to output verbatim what it heard, with
-// no commentary, analysis, or reply. Useful for verifying mic + audio pipeline
-// before layering coaching on top.
-const VOICE_PROMPT =
-  'Transcribe the audio verbatim. Output only the spoken words, exactly as heard. No commentary, no analysis, no extra text.';
 
 const RECORD_OPTIONS = {
   sampleRate: 16000,
@@ -49,9 +42,10 @@ const RECORD_OPTIONS = {
   wavFile: 'voice-coach-clip.wav',
 };
 
-// Cactus's CactusFileSystem isn't re-exported from the package root, so grab
-// the underlying Nitro hybrid object directly. Used to manually download
-// Gemma 4 (which the auto-registry filters out — only ships int4, no int8).
+// Stream chunking: 16kHz mono 16-bit = 32000 bytes/s. We flush every ~2s of
+// audio, which matches Cactus's default minChunkSize (32000 samples).
+const CHUNK_BYTES = 64000;
+
 type CactusFS = {
   modelExists(model: string): Promise<boolean>;
   downloadModel(
@@ -89,19 +83,44 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
   const insets = useSafeAreaInsets();
   const stt = useCactusSTT({ model: MODEL_SLUG, options: { quantization: QUANT } });
 
-  // Manage Gemma 4 download ourselves (registry skips it for lacking int8)
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [modelReady, setModelReady] = useState(false);
 
   const [isRecording, setIsRecording] = useState(false);
-  const [isThinking, setIsThinking] = useState(false);
-  const [reply, setReply] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
   const [diag, setDiag] = useState<string>('');
+
   const recorderReady = useRef(false);
   const recordStartedAt = useRef<number>(0);
   const pcmBytes = useRef<number[]>([]);
+  const totalBytes = useRef<number>(0);
+  const flushingRef = useRef(false);
+  const streamingRef = useRef(false);
+  const sttRef = useRef(stt);
+
+  useEffect(() => {
+    sttRef.current = stt;
+  }, [stt]);
+
+  // Pull a chunk off the buffer and feed it to the streaming engine. Drops
+  // calls if a previous flush is still mid-inference (back-pressure).
+  const tryFlush = async (force: boolean) => {
+    if (!streamingRef.current) return;
+    if (flushingRef.current) return;
+    const have = pcmBytes.current.length;
+    if (!force && have < CHUNK_BYTES) return;
+    if (have === 0) return;
+    flushingRef.current = true;
+    const chunk = pcmBytes.current.splice(0, have);
+    try {
+      await sttRef.current.streamTranscribeProcess({ audio: chunk });
+    } catch (err: any) {
+      setLocalError(err?.message ?? 'streamTranscribeProcess failed.');
+    } finally {
+      flushingRef.current = false;
+    }
+  };
 
   useEffect(() => {
     if (!recorderReady.current) {
@@ -111,12 +130,13 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
         for (let i = 0; i < chunk.length; i++) {
           pcmBytes.current.push(chunk[i]);
         }
+        totalBytes.current += chunk.length;
+        tryFlush(false);
       });
       recorderReady.current = true;
     }
   }, []);
 
-  // Manual Gemma 4 download
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -147,7 +167,7 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
     };
   }, []);
 
-  const handleStartRecording = async () => {
+  const handleStart = async () => {
     setLocalError(null);
     setDiag('');
     if (!modelReady) {
@@ -160,61 +180,58 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
       return;
     }
     try {
-      setReply('');
       pcmBytes.current = [];
+      totalBytes.current = 0;
+      flushingRef.current = false;
+
+      await stt.streamTranscribeStart({
+        confirmationThreshold: 0.85,
+        minChunkSize: 32000,
+        language: 'en',
+      });
+      streamingRef.current = true;
+
       AudioRecord.start();
       recordStartedAt.current = Date.now();
       setIsRecording(true);
     } catch (err: any) {
-      setLocalError(err?.message ?? 'Failed to start recording.');
+      streamingRef.current = false;
+      setLocalError(err?.message ?? 'Failed to start streaming.');
     }
   };
 
-  const handleStopAndAsk = async () => {
+  const handleStop = async () => {
     try {
       await AudioRecord.stop();
       const durationMs = Date.now() - recordStartedAt.current;
       setIsRecording(false);
 
-      const samples = pcmBytes.current;
-      const byteCount = samples.length;
-      const sampleCount = byteCount / 2;
-      const energy = computeEnergy(samples);
-      setDiag(`bytes=${byteCount} samples=${sampleCount} dur=${durationMs}ms rms=${energy.toFixed(0)}`);
-
-      if (durationMs < 800) {
-        setLocalError('Clip too short — speak for at least a second.');
-        return;
+      // Wait for any in-flight chunk, then flush whatever's left.
+      while (flushingRef.current) {
+        await new Promise((r) => setTimeout(r, 50));
       }
-      if (byteCount < 4000) {
-        setLocalError('No audio captured. Mic may be blocked.');
-        return;
-      }
-      if (energy < 100) {
-        setLocalError("Audio is silent. Check mic permission and that the phone isn't muted.");
-        return;
+      await tryFlush(true);
+      while (flushingRef.current) {
+        await new Promise((r) => setTimeout(r, 50));
       }
 
-      setIsThinking(true);
-      const result = await stt.transcribe({
-        audio: samples,
-        prompt: VOICE_PROMPT,
-        options: { useVad: true, maxTokens: 256, temperature: 0.0 },
-      });
-      setReply((result.response ?? '').trim() || '(empty response)');
+      streamingRef.current = false;
+      await stt.streamTranscribeStop();
+
+      setDiag(
+        `bytes=${totalBytes.current} samples=${totalBytes.current / 2} dur=${durationMs}ms`,
+      );
     } catch (err: any) {
-      setLocalError(err?.message ?? 'Pipeline failed.');
-    } finally {
-      setIsThinking(false);
+      streamingRef.current = false;
+      setLocalError(err?.message ?? 'Failed to stop streaming.');
     }
   };
 
   const onMicPress = () => {
-    if (isThinking) return;
     if (isRecording) {
-      handleStopAndAsk();
+      handleStop();
     } else {
-      handleStartRecording();
+      handleStart();
     }
   };
 
@@ -224,11 +241,15 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
     downloadProgress,
     modelReady,
     isRecording,
-    isThinking,
+    isStreamTranscribing: stt.isStreamTranscribing,
     error: stt.error ?? localError,
   });
 
-  const micDisabled = !modelReady || downloading || isThinking;
+  const micDisabled = !modelReady || downloading;
+
+  const confirmed = stt.streamTranscribeConfirmed;
+  const pending = stt.streamTranscribePending;
+  const hasText = (confirmed + pending).trim().length > 0;
 
   return (
     <View
@@ -244,7 +265,7 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
       <View style={styles.header}>
         <Text style={[styles.title, { color: palette.text }]}>AI Voice Coach</Text>
         <Text style={[styles.subtitle, { color: palette.muted }]}>
-          {MODEL_SLUG} ({QUANT}) · on-device via Cactus
+          {MODEL_SLUG} ({QUANT}) · streaming on-device
         </Text>
       </View>
 
@@ -259,16 +280,19 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
             },
           ]}
         >
-          <Text style={[styles.cardLabel, { color: palette.muted }]}>Transcript</Text>
-          <Text style={[styles.cardBody, { color: palette.text }]}>
-            {reply ||
-              (isThinking
-                ? 'Transcribing…'
-                : isRecording
-                ? 'Listening…'
-                : 'Tap mic and speak.')}
-          </Text>
+          <Text style={[styles.cardLabel, { color: palette.muted }]}>Live Transcript</Text>
+          {hasText ? (
+            <Text style={[styles.cardBody, { color: palette.text }]}>
+              <Text>{confirmed}</Text>
+              <Text style={{ color: palette.muted }}>{pending}</Text>
+            </Text>
+          ) : (
+            <Text style={[styles.cardBody, { color: palette.muted }]}>
+              {isRecording ? 'Listening… speak now' : 'Tap mic and speak.'}
+            </Text>
+          )}
         </View>
+
         {(stt.error || localError) ? (
           <View style={styles.errorBox}>
             <Text style={styles.errorLabel}>ERROR</Text>
@@ -298,7 +322,7 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
 
         <TouchableOpacity
           accessibilityRole="button"
-          accessibilityLabel={isRecording ? 'Stop recording' : 'Start recording'}
+          accessibilityLabel={isRecording ? 'Stop streaming' : 'Start streaming'}
           onPress={onMicPress}
           disabled={micDisabled}
           activeOpacity={0.85}
@@ -310,34 +334,15 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
             },
           ]}
         >
-          {isThinking ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.micIcon}>{isRecording ? '■' : '🎤'}</Text>
-          )}
+          <Text style={styles.micIcon}>{isRecording ? '■' : '🎤'}</Text>
         </TouchableOpacity>
 
         <Text style={[styles.hint, { color: palette.muted }]}>
-          {isRecording ? 'Tap to stop & transcribe' : 'Tap to record'}
+          {isRecording ? 'Tap to stop' : 'Tap to stream live'}
         </Text>
       </View>
     </View>
   );
-}
-
-function computeEnergy(bytes: number[]): number {
-  if (bytes.length < 2) return 0;
-  let sumSq = 0;
-  let count = 0;
-  for (let i = 0; i + 1 < bytes.length; i += 2) {
-    const lo = bytes[i];
-    const hi = bytes[i + 1];
-    let sample = (hi << 8) | lo;
-    if (sample & 0x8000) sample = sample - 0x10000;
-    sumSq += sample * sample;
-    count++;
-  }
-  return count === 0 ? 0 : Math.sqrt(sumSq / count);
 }
 
 type StatusInput = {
@@ -345,7 +350,7 @@ type StatusInput = {
   downloadProgress: number;
   modelReady: boolean;
   isRecording: boolean;
-  isThinking: boolean;
+  isStreamTranscribing: boolean;
   error: string | null;
 };
 
@@ -358,8 +363,8 @@ function describeStatus(s: StatusInput): { label: string; tone: 'info' | 'error'
     };
   }
   if (!s.modelReady) return { label: 'Preparing Gemma 4…', tone: 'info' };
-  if (s.isThinking) return { label: 'Transcribing…', tone: 'info' };
-  if (s.isRecording) return { label: 'Recording…', tone: 'info' };
+  if (s.isRecording) return { label: 'Streaming…', tone: 'info' };
+  if (s.isStreamTranscribing) return { label: 'Finalizing…', tone: 'info' };
   return { label: 'Ready', tone: 'info' };
 }
 
