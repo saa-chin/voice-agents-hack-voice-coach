@@ -63,6 +63,31 @@ const STAGE_LABEL: Record<Stage, string> = {
   main_task: 'Main task',
 };
 
+// ---- theme ----------------------------------------------------------------
+//
+// Two-tone (light/dark) toggle. The initial class is set by the no-flash
+// inline script in index.astro before paint; we mirror that logic here so
+// the React state stays in sync with whatever the script picked.
+
+type Theme = 'light' | 'dark';
+
+function readInitialTheme(): Theme {
+  if (typeof document === 'undefined') return 'light';
+  return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+}
+
+function applyTheme(theme: Theme) {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  if (theme === 'dark') root.classList.add('dark');
+  else root.classList.remove('dark');
+  try {
+    localStorage.setItem('vc-theme', theme);
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
 export default function CoachApp() {
   const [phase, setPhase] = useState<Phase>('connecting');
   const [drill, setDrill] = useState<DrillMsg | null>(null);
@@ -73,6 +98,7 @@ export default function CoachApp() {
   const [transientError, setTransientError] = useState<string | null>(null);
   const [wsState, setWsState] = useState<string>('CONNECTING');
   const [autoMode, setAutoMode] = useState(true);
+  const [theme, setTheme] = useState<Theme>(readInitialTheme);
   // Live transcript while recording. We update on every recognizer event,
   // not via forceTick — interim results arrive faster than 50 ms.
   const [liveTranscript, setLiveTranscript] = useState<{
@@ -558,6 +584,14 @@ export default function CoachApp() {
   startRecordingRef.current = startRecording;
   stopRecordingRef.current = stopRecording;
 
+  const toggleTheme = () => {
+    setTheme((prev) => {
+      const next: Theme = prev === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      return next;
+    });
+  };
+
   // ---- Render ------------------------------------------------------------
 
   const analysis: AudioAnalysis | null =
@@ -578,11 +612,11 @@ export default function CoachApp() {
         (inSession ? 'max-w-6xl' : 'max-w-2xl')
       }
     >
-      <Header wsState={wsState} />
+      <Header wsState={wsState} theme={theme} onToggleTheme={toggleTheme} />
 
       <section className="flex flex-1 flex-col gap-4">
         {!isTTSAvailable() && (
-          <div className="rounded-xl border border-yellow-400/60 bg-yellow-100/80 px-4 py-2 text-xs text-yellow-900">
+          <div className="rounded-xl border border-[var(--warning-soft)] bg-[var(--warning-soft)] px-4 py-2 text-xs text-[var(--warning)]">
             This browser doesn't expose <code>speechSynthesis</code>. The coach
             will be silent — try Chrome, Edge, or Safari.
           </div>
@@ -648,38 +682,111 @@ export default function CoachApp() {
 
 // ---- Sub-components -------------------------------------------------------
 
-function Header({ wsState }: { wsState: string }) {
+function Header({
+  wsState,
+  theme,
+  onToggleTheme,
+}: {
+  wsState: string;
+  theme: Theme;
+  onToggleTheme: () => void;
+}) {
   const dotColor =
     wsState === 'OPEN'
-      ? 'bg-[#1a6b45] shadow-[0_0_6px_2px_rgba(26,107,69,0.5)]'
+      ? 'bg-[var(--accent)] shadow-[0_0_6px_2px_var(--accent-ring)]'
       : wsState === 'CONNECTING'
-      ? 'bg-[#f0a820] shadow-[0_0_6px_2px_rgba(240,168,32,0.5)]'
-      : 'bg-rose-500';
+      ? 'bg-[var(--warning)] shadow-[0_0_6px_2px_var(--warning-soft)]'
+      : 'bg-[var(--danger)]';
   return (
-    <header className="relative mb-10 flex items-start justify-between">
+    <header className="relative mb-10 flex items-start justify-between gap-3">
       <div>
-        <h1 className="text-4xl font-extrabold tracking-tight text-[#0f4c81]">
+        <h1 className="text-4xl font-extrabold tracking-tight text-[var(--text)]">
           Voice Coach
         </h1>
-        <p className="mt-1.5 text-sm text-[#2d5a4a]">
+        <p className="mt-1.5 text-sm text-[var(--text-muted)]">
           On-device speech practice · Gemma 4 + Cactus
         </p>
       </div>
-      <div
-        className="mt-2 flex items-center gap-2 rounded-full border border-white/60 bg-white/50 px-3 py-1.5 text-[10px] uppercase tracking-wider text-[#2d5a4a] backdrop-blur"
-        title={`WebSocket: ${wsState}`}
-      >
-        <span className={`inline-block h-2 w-2 rounded-full transition ${dotColor}`} />
-        {wsState}
+      <div className="mt-2 flex items-center gap-2">
+        <div
+          className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-3 py-1.5 text-[10px] uppercase tracking-wider text-[var(--text-muted)] backdrop-blur"
+          title={`WebSocket: ${wsState}`}
+        >
+          <span
+            className={`inline-block h-2 w-2 rounded-full transition ${dotColor}`}
+          />
+          {wsState}
+        </div>
+        <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </div>
     </header>
   );
 }
 
+function ThemeToggle({
+  theme,
+  onToggle,
+}: {
+  theme: Theme;
+  onToggle: () => void;
+}) {
+  const isDark = theme === 'dark';
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+      title={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+      className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)] backdrop-blur transition hover:bg-[var(--surface)] hover:text-[var(--text)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-ring)]"
+    >
+      {isDark ? (
+        // Sun icon — clicking returns to light
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="h-4 w-4"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2" />
+          <path d="M12 20v2" />
+          <path d="m4.93 4.93 1.41 1.41" />
+          <path d="m17.66 17.66 1.41 1.41" />
+          <path d="M2 12h2" />
+          <path d="M20 12h2" />
+          <path d="m6.34 17.66-1.41 1.41" />
+          <path d="m19.07 4.93-1.41 1.41" />
+        </svg>
+      ) : (
+        // Moon icon — clicking switches to dark
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="h-4 w-4"
+          aria-hidden="true"
+        >
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 function Footer() {
   return (
-    <footer className="mt-8 border-t border-[#1a6b45]/20 pt-4 text-xs text-[#2d5a4a]/70">
-      🔒 Audio is processed entirely on your machine. Nothing is sent to any cloud service.
+    <footer className="mt-8 border-t border-[var(--border)] pt-4 text-xs text-[var(--text-faint)]">
+      Audio is processed entirely on your machine. Nothing is sent to any cloud
+      service.
     </footer>
   );
 }
@@ -695,13 +802,15 @@ function StatusCard({
 }) {
   return (
     <div className="card p-8 text-center">
-      <div className="text-lg font-semibold text-[#0f2420]">{label}</div>
-      {hint && <div className="mt-2 text-sm text-[#2d5a4a]">{hint}</div>}
+      <div className="text-lg font-semibold text-[var(--text)]">{label}</div>
+      {hint && (
+        <div className="mt-2 text-sm text-[var(--text-muted)]">{hint}</div>
+      )}
       {spinner && (
         <div className="mt-6 flex items-center justify-center gap-2">
-          <div className="h-2.5 w-2.5 animate-bounce rounded-full bg-[#1a6b45] [animation-delay:-0.3s]" />
-          <div className="h-2.5 w-2.5 animate-bounce rounded-full bg-[#f0a820] [animation-delay:-0.15s]" />
-          <div className="h-2.5 w-2.5 animate-bounce rounded-full bg-[#8b7ed8]" />
+          <div className="h-2.5 w-2.5 animate-bounce rounded-full bg-[var(--accent)] [animation-delay:-0.3s]" />
+          <div className="h-2.5 w-2.5 animate-bounce rounded-full bg-[var(--warning)] [animation-delay:-0.15s]" />
+          <div className="h-2.5 w-2.5 animate-bounce rounded-full bg-[var(--violet)]" />
         </div>
       )}
     </div>
@@ -710,38 +819,40 @@ function StatusCard({
 
 function StartCard({ onStart }: { onStart: () => void }) {
   return (
-    <div className="relative overflow-hidden rounded-3xl border border-white/70 bg-white/70 p-10 text-center shadow-2xl shadow-[#0f2420]/10 backdrop-blur">
-      <div className="pointer-events-none absolute -left-16 -top-16 h-56 w-56 rounded-full bg-[#1a6b45]/15 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-16 -right-16 h-56 w-56 rounded-full bg-[#8b7ed8]/12 blur-3xl" />
-      <div className="pointer-events-none absolute right-12 top-8 h-28 w-28 rounded-full bg-[#f0a820]/15 blur-2xl" />
+    <div className="card relative overflow-hidden p-10 text-center">
+      <div className="pointer-events-none absolute -left-16 -top-16 h-56 w-56 rounded-full bg-[var(--accent-soft)] blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-16 -right-16 h-56 w-56 rounded-full bg-[var(--violet-soft)] blur-3xl" />
+      <div className="pointer-events-none absolute right-12 top-8 h-28 w-28 rounded-full bg-[var(--warning-soft)] blur-2xl" />
 
       <div className="relative">
-        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#1a6b45]/10 text-3xl ring-1 ring-[#1a6b45]/20">
+        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-3xl ring-1 ring-[var(--accent-ring)]">
           🎙️
         </div>
-        <h2 className="text-3xl font-extrabold tracking-tight text-[#0f2420]">
-          Your{' '}
-          <span className="rounded-full bg-[#f0a820] px-3 py-0.5 text-white">
-            Happy
-          </span>{' '}
-          Place for Voice Practice
+        <h2 className="text-3xl font-extrabold tracking-tight text-[var(--text)]">
+          Ready when you are.
         </h2>
-        <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-[#2d5a4a]">
+        <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-[var(--text-muted)]">
           Ten short drills — vowel warm-ups, phrases, and conversation prompts.
-          Speak when prompted; the on-device coach responds with instant feedback.
+          Speak when prompted; the on-device coach responds with instant
+          feedback.
         </p>
-        <div className="mt-6 flex justify-center gap-4 text-xs">
-          <span className="rounded-full bg-[#1a6b45]/10 px-3 py-1.5 font-medium text-[#1a6b45]">🔒 100% on-device</span>
-          <span className="rounded-full bg-[#8b7ed8]/10 px-3 py-1.5 font-medium text-[#6b5ec4]">✨ Gemma 4 AI</span>
-          <span className="rounded-full bg-[#f0a820]/10 px-3 py-1.5 font-medium text-[#b87c10]">⏱ ~10 min</span>
+        <div className="mt-6 flex flex-wrap justify-center gap-2 text-xs">
+          <span className="rounded-full bg-[var(--accent-soft)] px-3 py-1.5 font-medium text-[var(--accent)]">
+            100% on-device
+          </span>
+          <span className="rounded-full bg-[var(--violet-soft)] px-3 py-1.5 font-medium text-[var(--violet)]">
+            Gemma 4 AI
+          </span>
+          <span className="rounded-full bg-[var(--warning-soft)] px-3 py-1.5 font-medium text-[var(--warning)]">
+            ~10 min
+          </span>
         </div>
         <button
           onClick={onStart}
-          className="mt-8 rounded-full bg-[#0f2420] px-10 py-3.5 font-bold tracking-wide text-white shadow-lg shadow-[#0f2420]/30 transition hover:bg-[#1a6b45] active:scale-[0.97]"
+          className="mt-8 rounded-full bg-[var(--accent)] px-10 py-3.5 font-bold tracking-wide text-[var(--accent-fg)] shadow-lg shadow-[var(--accent-soft)] transition hover:bg-[var(--accent-strong)] active:scale-[0.97]"
         >
-          Start Session
+          Start session
         </button>
-        <div className="mt-3 text-xs font-medium text-[#1a6b45]">Learn how to join.</div>
       </div>
     </div>
   );
@@ -865,41 +976,39 @@ function StageIndicator({ drill }: { drill: DrillMsg }) {
   return (
     <div className="flex flex-col gap-2 text-xs">
       {drill.exercise_name && (
-        <div className="flex items-center justify-between text-[11px] uppercase tracking-wider text-zinc-500">
+        <div className="flex items-center justify-between text-[11px] uppercase tracking-wider text-[var(--text-faint)]">
           <span>
             {drill.category_name && (
               <>
-                <span className="text-zinc-600">{drill.category_name}</span>
-                <span className="mx-1 text-zinc-700">›</span>
+                <span className="text-[var(--text-muted)]">
+                  {drill.category_name}
+                </span>
+                <span className="mx-1 text-[var(--text-faint)]">›</span>
               </>
             )}
-            <span className="text-zinc-300">{drill.exercise_name}</span>
+            <span className="font-medium text-[var(--text)]">
+              {drill.exercise_name}
+            </span>
           </span>
           <span>
             step {drill.position + 1} / {drill.total}
           </span>
         </div>
       )}
-      <div className="flex gap-1.5">
+      <div className="flex flex-wrap gap-1.5">
         {STAGES.map((s, i) => {
           const active = drill.stage === s;
           const done = STAGES.indexOf(drill.stage as Stage) > i;
-          const gradients = [
-            'from-violet-500 to-violet-400',
-            'from-sky-500 to-cyan-400',
-            'from-amber-500 to-yellow-400',
-            'from-emerald-500 to-teal-400',
-          ];
           return (
             <span
               key={s}
               className={
                 'rounded-full border px-3 py-1 text-xs transition-all duration-300 ' +
                 (active
-                  ? `bg-gradient-to-r ${gradients[i]} border-transparent text-zinc-950 font-semibold shadow-md`
+                  ? 'border-transparent bg-[var(--accent)] text-[var(--accent-fg)] font-semibold shadow-sm'
                   : done
-                  ? 'border-white/10 bg-white/5 text-slate-500 line-through'
-                  : 'border-white/5 bg-white/[0.03] text-slate-600')
+                  ? 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-faint)] line-through'
+                  : 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]')
               }
             >
               {STAGE_LABEL[s]}
@@ -926,28 +1035,30 @@ function PromptCard({
   const dur = drill.target_duration_sec ?? 0;
   return (
     <div className="card p-6">
-      <div className="text-xs font-semibold uppercase tracking-wider text-[#1a6b45]">
+      <div className="text-xs font-semibold uppercase tracking-wider text-[var(--accent)]">
         {isInstructionOnly ? 'Phase cue' : 'Say this'}
       </div>
       {isInstructionOnly ? (
-        <div className="mt-2 text-2xl font-bold leading-snug text-[#0f2420]">
+        <div className="mt-2 text-2xl font-bold leading-snug text-[var(--text)]">
           {drill.prompt}
         </div>
       ) : (
         <>
-          <div className="mt-2 text-3xl font-bold leading-tight text-[#0f2420]">
-            "{drill.prompt}"
+          <div className="mt-2 text-3xl font-bold leading-tight text-[var(--text)]">
+            “{drill.prompt}”
           </div>
-          <div className="mt-3 text-sm text-[#2d5a4a]">{drill.note}</div>
+          <div className="mt-3 text-sm text-[var(--text-muted)]">
+            {drill.note}
+          </div>
         </>
       )}
       {drill.focus && (
-        <div className="mt-3 inline-block rounded-full bg-[#f0a820]/15 px-2.5 py-1 text-xs font-medium text-[#b87c10]">
+        <div className="mt-3 inline-block rounded-full bg-[var(--warning-soft)] px-2.5 py-1 text-xs font-medium text-[var(--warning)]">
           focus: {drill.focus}
         </div>
       )}
       {(reps > 0 || dur > 0) && (
-        <div className="mt-1 font-mono text-[11px] text-[#2d5a4a]/60">
+        <div className="mt-2 font-mono text-[11px] text-[var(--text-faint)]">
           {reps > 1 && `target ${reps} reps`}
           {reps > 1 && dur > 0 && ' · '}
           {dur > 0 && `~${dur}s each`}
@@ -955,7 +1066,7 @@ function PromptCard({
       )}
       <button
         onClick={onRepeat}
-        className="mt-4 text-xs font-medium text-[#1a6b45] underline-offset-4 hover:underline"
+        className="mt-4 text-xs font-medium text-[var(--accent)] underline-offset-4 hover:underline"
       >
         ▶︎ hear it again
       </button>
@@ -992,10 +1103,18 @@ function MicButton({
         {isRecording && (
           <>
             <div
-              className={`absolute h-24 w-24 rounded-full mic-ring-anim ${speaking ? 'bg-emerald-400/30' : 'bg-rose-400/20'}`}
+              className={
+                'absolute h-24 w-24 rounded-full mic-ring-anim ' +
+                (speaking ? 'bg-[var(--accent-soft)]' : 'bg-[var(--danger-soft)]')
+              }
             />
             <div
-              className={`absolute h-24 w-24 rounded-full transition-transform duration-100 ${speaking ? 'bg-emerald-400/15' : 'bg-rose-400/10'}`}
+              className={
+                'absolute h-24 w-24 rounded-full transition-transform duration-100 ' +
+                (speaking
+                  ? 'bg-[var(--accent-soft)]'
+                  : 'bg-[var(--danger-soft)]')
+              }
               style={{ transform: `scale(${ringScale + 0.3})` }}
             />
           </>
@@ -1007,16 +1126,16 @@ function MicButton({
             'relative flex h-24 w-24 items-center justify-center rounded-full text-3xl font-semibold transition-all duration-200 active:scale-95 ' +
             (isRecording
               ? speaking
-                ? 'bg-gradient-to-br from-emerald-400 to-teal-500 text-zinc-950 glow-emerald'
-                : 'bg-gradient-to-br from-rose-500 to-rose-600 text-white glow-rose'
+                ? 'bg-[var(--accent)] text-[var(--accent-fg)] glow-accent'
+                : 'bg-[var(--danger)] text-white glow-rose'
               : isThinking
-              ? 'bg-zinc-800 text-zinc-500'
-              : 'bg-gradient-to-br from-emerald-400 to-teal-500 text-zinc-950 shadow-xl shadow-emerald-500/40 hover:shadow-emerald-500/60')
+              ? 'bg-[var(--surface-inset)] text-[var(--text-faint)] cursor-not-allowed'
+              : 'bg-[var(--accent)] text-[var(--accent-fg)] shadow-xl shadow-[var(--accent-soft)] hover:bg-[var(--accent-strong)]')
           }
           aria-label={isRecording ? 'Stop recording' : 'Start recording'}
         >
           {isThinking ? (
-            <span className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-300" />
+            <span className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-[var(--border-strong)] border-t-[var(--accent)]" />
           ) : isRecording ? (
             '■'
           ) : (
@@ -1024,7 +1143,7 @@ function MicButton({
           )}
         </button>
       </div>
-      <div className="text-xs text-zinc-500">
+      <div className="text-xs text-[var(--text-muted)]">
         {isRecording
           ? speaking
             ? autoMode
@@ -1051,7 +1170,7 @@ function MetricsLine({
   target: number;
 }) {
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-2 font-mono text-xs text-zinc-400">
+    <div className="card-soft px-4 py-2 font-mono text-xs text-[var(--text-muted)]">
       captured {metrics.duration_s.toFixed(1)}s · loudness{' '}
       {metrics.dbfs == null ? '—' : `${metrics.dbfs.toFixed(1)} dBFS`} (target{' '}
       {target.toFixed(1)} dBFS)
@@ -1105,17 +1224,17 @@ function LiveAnalyzer({
 
   return (
     <div className="card p-4">
-      <div className="mb-3 flex items-center justify-between text-[10px] uppercase tracking-wider text-[#8b7ed8]">
+      <div className="mb-3 flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-faint)]">
         <span>Live signal</span>
         <span className="flex items-center gap-1.5">
           <span
             className={
               'inline-block h-2 w-2 rounded-full transition ' +
               (speaking
-                ? 'bg-emerald-400 shadow-[0_0_6px_2px_rgba(52,211,153,0.6)]'
+                ? 'bg-[var(--accent)] shadow-[0_0_6px_2px_var(--accent-ring)]'
                 : recording
-                ? 'bg-zinc-600'
-                : 'bg-zinc-700')
+                ? 'bg-[var(--text-faint)]'
+                : 'bg-[var(--border-strong)]')
             }
           />
           {speaking ? 'voice' : recording ? 'silence' : 'idle'}
@@ -1192,17 +1311,16 @@ function ScoreGauge({
   const R = (SIZE - STROKE) / 2;
   const C = 2 * Math.PI * R;
   const dash = (value / 100) * C;
-  const ringColor =
-    !active
-      ? 'stroke-zinc-700'
-      : value >= 70
-      ? 'stroke-emerald-400'
-      : value >= 40
-      ? 'stroke-amber-400'
-      : 'stroke-rose-400';
+  const ringStroke = !active
+    ? 'var(--border-strong)'
+    : value >= 70
+    ? 'var(--accent)'
+    : value >= 40
+    ? 'var(--warning)'
+    : 'var(--danger)';
   return (
     <div className="flex w-28 flex-col items-center">
-      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+      <div className="text-[10px] uppercase tracking-wider text-[var(--text-faint)]">
         Score
       </div>
       <div className="relative mt-2">
@@ -1212,7 +1330,8 @@ function ScoreGauge({
             cy={SIZE / 2}
             r={R}
             strokeWidth={STROKE}
-            className="fill-none stroke-zinc-800"
+            fill="none"
+            stroke="var(--border)"
           />
           <circle
             cx={SIZE / 2}
@@ -1221,25 +1340,27 @@ function ScoreGauge({
             strokeWidth={STROKE}
             strokeLinecap="round"
             strokeDasharray={`${dash.toFixed(2)} ${C.toFixed(2)}`}
-            className={`fill-none transition-[stroke-dasharray,stroke] duration-150 ${ringColor}`}
+            fill="none"
+            stroke={ringStroke}
+            className="transition-[stroke-dasharray,stroke] duration-150"
           />
         </svg>
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
           <span
             className={
               'text-2xl font-semibold tabular-nums ' +
-              (active ? 'text-zinc-100' : 'text-zinc-600')
+              (active ? 'text-[var(--text)]' : 'text-[var(--text-faint)]')
             }
           >
             {active ? value : '—'}
           </span>
-          <span className="text-[9px] uppercase tracking-wider text-zinc-500">
+          <span className="text-[9px] uppercase tracking-wider text-[var(--text-faint)]">
             / 100
           </span>
         </div>
       </div>
       {active && score && (
-        <div className="mt-1 grid w-full grid-cols-2 gap-1 text-center font-mono text-[9px] text-zinc-500">
+        <div className="mt-1 grid w-full grid-cols-2 gap-1 text-center font-mono text-[9px] text-[var(--text-faint)]">
           <span>L {score.loudness}</span>
           <span>V {score.voicing}</span>
         </div>
@@ -1259,17 +1380,17 @@ function LiveTranscript({
   const empty = !transcript.final && !transcript.interim;
   return (
     <div className="card p-4">
-      <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-[#8b7ed8]">
+      <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-faint)]">
         <span>Live transcript</span>
         <span className="flex items-center gap-1.5">
           <span
             className={
               'inline-block h-1.5 w-1.5 rounded-full ' +
               (recording
-                ? 'animate-pulse bg-emerald-400'
+                ? 'animate-pulse bg-[var(--accent)]'
                 : phase === 'thinking'
-                ? 'bg-amber-400'
-                : 'bg-zinc-600')
+                ? 'bg-[var(--warning)]'
+                : 'bg-[var(--border-strong)]')
             }
           />
           {recording ? 'live' : phase === 'thinking' ? 'finalising' : 'captured'}
@@ -1277,18 +1398,18 @@ function LiveTranscript({
       </div>
       <div className="min-h-[3.5rem] text-base leading-snug">
         {empty ? (
-          <span className="text-sm italic text-zinc-600">
+          <span className="text-sm italic text-[var(--text-faint)]">
             {recording
               ? 'Start speaking — your words will appear here.'
               : 'Nothing transcribed.'}
           </span>
         ) : (
           <>
-            <span className="text-zinc-100">{transcript.final}</span>
+            <span className="text-[var(--text)]">{transcript.final}</span>
             {transcript.interim && (
               <>
                 {transcript.final && ' '}
-                <span className="italic text-zinc-400">
+                <span className="italic text-[var(--text-muted)]">
                   {transcript.interim}
                 </span>
               </>
@@ -1315,34 +1436,37 @@ function LoudnessMeter({
   onTarget: boolean;
   active: boolean;
 }) {
-  // Visual ramp: dim → emerald → amber when over-driven. The ramp is purely
+  // Visual ramp: dim → accent → warning when over-driven. The ramp is purely
   // the bar's gradient; the absolute value still comes from `loudFrac`.
-  const barTone = !active
-    ? 'from-zinc-700 to-zinc-700'
+  const barColor = !active
+    ? 'var(--border-strong)'
     : loudFrac > 0.85
-    ? 'from-amber-500 to-rose-500'
+    ? 'var(--danger)'
     : onTarget
-    ? 'from-emerald-500 to-emerald-300'
-    : 'from-emerald-600/80 to-emerald-400/80';
+    ? 'var(--accent)'
+    : 'var(--accent-strong)';
   return (
     <div>
-      <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-zinc-500">
+      <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-faint)]">
         <span>Loudness</span>
-        <span className="font-mono normal-case tracking-normal text-zinc-400">
+        <span className="font-mono normal-case tracking-normal text-[var(--text-muted)]">
           {active && isFinite(dbfs) ? `${dbfs.toFixed(1)} dBFS` : '—'}
-          <span className="ml-2 text-zinc-600">
+          <span className="ml-2 text-[var(--text-faint)]">
             target {target_dbfs.toFixed(0)}
           </span>
         </span>
       </div>
-      <div className="relative mt-1.5 h-3 w-full overflow-hidden rounded-full bg-zinc-800">
+      <div className="relative mt-1.5 h-3 w-full overflow-hidden rounded-full bg-[var(--surface-inset)]">
         <div
-          className={`h-full rounded-full bg-gradient-to-r transition-[width] duration-75 ${barTone}`}
-          style={{ width: `${(loudFrac * 100).toFixed(1)}%` }}
+          className="h-full rounded-full transition-[width] duration-75"
+          style={{
+            width: `${(loudFrac * 100).toFixed(1)}%`,
+            background: barColor,
+          }}
         />
         {/* Target marker: vertical line at targetFrac. */}
         <div
-          className="pointer-events-none absolute top-[-2px] h-[calc(100%+4px)] w-0.5 bg-zinc-300/80"
+          className="pointer-events-none absolute top-[-2px] h-[calc(100%+4px)] w-0.5 bg-[var(--text)]/60"
           style={{ left: `calc(${(targetFrac * 100).toFixed(1)}% - 1px)` }}
           title={`target ${target_dbfs.toFixed(1)} dBFS`}
         />
@@ -1354,7 +1478,7 @@ function LoudnessMeter({
 function SpectrumBars({ bands, active }: { bands: number[]; active: boolean }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+      <div className="text-[10px] uppercase tracking-wider text-[var(--text-faint)]">
         Spectrum (Hz)
       </div>
       <div className="mt-2 flex h-20 items-end gap-1.5">
@@ -1370,16 +1494,18 @@ function SpectrumBars({ bands, active }: { bands: number[]; active: boolean }) {
             >
               <div className="flex h-full w-full items-end">
                 <div
-                  className={
-                    'w-full rounded-sm transition-[height] duration-75 ' +
-                    (active
-                      ? 'bg-gradient-to-t from-emerald-500 to-emerald-300'
-                      : 'bg-zinc-800')
-                  }
-                  style={{ height: `${(height * 100).toFixed(1)}%` }}
+                  className="w-full rounded-sm transition-[height] duration-75"
+                  style={{
+                    height: `${(height * 100).toFixed(1)}%`,
+                    background: active
+                      ? 'var(--accent)'
+                      : 'var(--surface-inset)',
+                  }}
                 />
               </div>
-              <div className="text-[9px] text-zinc-600">{BAND_LABELS[i]}</div>
+              <div className="text-[9px] text-[var(--text-faint)]">
+                {BAND_LABELS[i]}
+              </div>
             </div>
           );
         })}
@@ -1402,21 +1528,21 @@ function PitchGauge({
   const frac = value != null ? (value - MIN) / (MAX - MIN) : 0;
   return (
     <div className="flex w-24 flex-col items-stretch">
-      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+      <div className="text-[10px] uppercase tracking-wider text-[var(--text-faint)]">
         Pitch
       </div>
-      <div className="relative mt-2 flex h-20 w-full items-end justify-center rounded-md border border-zinc-800 bg-zinc-950/40">
+      <div className="relative mt-2 flex h-20 w-full items-end justify-center rounded-md border border-[var(--border)] bg-[var(--surface-inset)]">
         {/* Vertical pitch column (bottom = 80 Hz, top = 400 Hz). */}
-        <div className="relative h-full w-2 rounded-full bg-zinc-800/70">
+        <div className="relative h-full w-2 rounded-full bg-[var(--surface-inset)]">
           {value != null && (
             <div
-              className="absolute left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-sky-400 shadow-[0_0_6px_2px_rgba(56,189,248,0.5)] transition-[bottom] duration-100"
+              className="absolute left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--info)] shadow-[0_0_6px_2px_var(--info-soft)] transition-[bottom] duration-100"
               style={{ bottom: `${(frac * 100).toFixed(1)}%` }}
             />
           )}
         </div>
       </div>
-      <div className="mt-1 text-center font-mono text-[11px] text-zinc-400">
+      <div className="mt-1 text-center font-mono text-[11px] text-[var(--text-muted)]">
         {active && value != null ? `${Math.round(value)} Hz` : '—'}
       </div>
     </div>
@@ -1436,10 +1562,10 @@ function AutoModeRow({
   // It's harmless but confusing — disable while a turn is in flight.
   const disabled = phase === 'recording' || phase === 'thinking';
   return (
-    <div className="card flex items-center justify-between px-4 py-2 text-xs text-[#8b7ed8]">
+    <div className="card-soft flex items-center justify-between px-4 py-2 text-xs text-[var(--text-muted)]">
       <span>
         Auto mic{' '}
-        <span className="text-[#8b7ed8]/60">
+        <span className="text-[var(--text-faint)]">
           (arms after the prompt, stops when you go quiet)
         </span>
       </span>
@@ -1448,14 +1574,14 @@ function AutoModeRow({
         disabled={disabled}
         className={
           'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-60 disabled:pointer-events-none ' +
-          (autoMode ? 'bg-emerald-500' : 'bg-zinc-700')
+          (autoMode ? 'bg-[var(--accent)]' : 'bg-[var(--border-strong)]')
         }
         aria-pressed={autoMode}
         aria-label="Toggle auto mic"
       >
         <span
           className={
-            'inline-block h-4 w-4 transform rounded-full bg-white transition ' +
+            'inline-block h-4 w-4 transform rounded-full bg-white shadow transition ' +
             (autoMode ? 'translate-x-6' : 'translate-x-1')
           }
         />
@@ -1467,25 +1593,30 @@ function AutoModeRow({
 function CoachCard({ coach }: { coach: CoachMsg }) {
   const matched = coach.matched_prompt !== false;
   const actionStyles: Record<string, string> = {
-    advance: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-    retry: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
-    rest: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+    advance:
+      'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent-ring)]',
+    retry:
+      'bg-[var(--warning-soft)] text-[var(--warning)] border-[var(--warning-soft)]',
+    rest:
+      'bg-[var(--info-soft)] text-[var(--info)] border-[var(--info-soft)]',
   };
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-5">
-      <div className="flex items-center justify-between text-xs uppercase tracking-wider text-zinc-500">
+    <div className="card p-5">
+      <div className="flex items-center justify-between text-xs uppercase tracking-wider text-[var(--text-faint)]">
         <span>Coach</span>
-        <span className="font-mono text-[10px] text-zinc-600">
+        <span className="font-mono text-[10px] text-[var(--text-faint)]">
           {coach.latency_s.toFixed(1)}s
         </span>
       </div>
 
       {coach.heard && (
-        <div className="mt-3 text-sm">
-          <span className="text-zinc-500">heard:</span>{' '}
-          <span className="font-medium">"{coach.heard}"</span>{' '}
+        <div className="mt-3 text-sm text-[var(--text-muted)]">
+          <span className="text-[var(--text-faint)]">heard:</span>{' '}
+          <span className="font-medium text-[var(--text)]">
+            “{coach.heard}”
+          </span>{' '}
           {!matched && (
-            <span className="ml-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] uppercase tracking-wider text-rose-300">
+            <span className="ml-1 rounded-full bg-[var(--danger-soft)] px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--danger)]">
               mismatch
             </span>
           )}
@@ -1493,17 +1624,20 @@ function CoachCard({ coach }: { coach: CoachMsg }) {
       )}
 
       {coach.ack && (
-        <div className="mt-2 text-base text-zinc-100">{coach.ack}</div>
+        <div className="mt-2 text-base text-[var(--text)]">{coach.ack}</div>
       )}
       {coach.feedback && (
-        <div className="mt-1 text-base text-zinc-300">{coach.feedback}</div>
+        <div className="mt-1 text-base text-[var(--text-muted)]">
+          {coach.feedback}
+        </div>
       )}
 
       <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px]">
         <span
           className={
             'rounded-full border px-2 py-0.5 uppercase tracking-wider ' +
-            (actionStyles[coach.next_action] ?? 'border-zinc-700 text-zinc-400')
+            (actionStyles[coach.next_action] ??
+              'border-[var(--border)] text-[var(--text-muted)]')
           }
         >
           → {coach.next_action}
@@ -1516,8 +1650,8 @@ function CoachCard({ coach }: { coach: CoachMsg }) {
               className={
                 'rounded-full border px-2 py-0.5 ' +
                 (v
-                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-                  : 'border-zinc-700 bg-zinc-800/50 text-zinc-500')
+                  ? 'border-[var(--accent-ring)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                  : 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-faint)]')
               }
             >
               {k.replace(/_/g, ' ').replace(/ ok$/, '')} {v ? '✓' : '·'}
@@ -1530,7 +1664,7 @@ function CoachCard({ coach }: { coach: CoachMsg }) {
 
 function TransientError({ message }: { message: string }) {
   return (
-    <div className="rounded-xl border border-rose-400/30 bg-white/30 px-4 py-2 text-sm text-rose-600 backdrop-blur">
+    <div className="rounded-xl border border-[var(--danger-soft)] bg-[var(--danger-soft)] px-4 py-2 text-sm text-[var(--danger)]">
       {message}
     </div>
   );
@@ -1568,10 +1702,10 @@ function ActionBar({
   const cmdDisabled = disabled || commandPhase === 'thinking';
   const cmdTone =
     commandPhase === 'listening'
-      ? 'border-rose-400/30 bg-rose-400/10 text-rose-600 hover:bg-rose-400/20'
+      ? 'border-[var(--danger-soft)] bg-[var(--danger-soft)] text-[var(--danger)] hover:bg-[var(--danger-soft)]'
       : commandPhase === 'thinking'
-      ? 'border-[#8b7ed8]/20 bg-white/20 text-[#8b7ed8]'
-      : 'border-[#8b7ed8]/20 bg-white/30 text-[#6b5ec4] hover:bg-white/50';
+      ? 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-faint)]'
+      : 'border-[var(--violet-soft)] bg-[var(--violet-soft)] text-[var(--violet)] hover:bg-[var(--surface)]';
   const cmdLabel =
     commandPhase === 'listening'
       ? 'Listening — tap to stop'
@@ -1600,7 +1734,7 @@ function ActionBar({
           disabled={commandPhase === 'thinking'}
           tone="danger"
         />
-        <span className="mx-1 hidden text-zinc-700 sm:inline">·</span>
+        <span className="mx-1 hidden text-[var(--text-faint)] sm:inline">·</span>
         <button
           type="button"
           onClick={isCmdActive ? onCancelCommand : onStartCommand}
@@ -1612,7 +1746,7 @@ function ActionBar({
           }
         >
           {commandPhase === 'listening' && (
-            <span className="mr-1.5 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-rose-300" />
+            <span className="mr-1.5 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--danger)]" />
           )}
           {cmdLabel}
         </button>
@@ -1637,8 +1771,8 @@ function ChipButton({
   // user (often elderly, often shaky) doesn't tap it by mistake.
   const cls =
     tone === 'danger'
-      ? 'border-rose-400/30 bg-rose-400/10 text-rose-600 hover:bg-rose-400/20'
-      : 'border-[#1a6b45]/20 bg-white/30 text-[#1a6b45] hover:bg-white/50';
+      ? 'border-[var(--danger-soft)] bg-[var(--danger-soft)] text-[var(--danger)] hover:opacity-90'
+      : 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text)] hover:bg-[var(--surface)]';
   return (
     <button
       type="button"
@@ -1668,37 +1802,40 @@ function IntentResultChip({ result }: { result: IntentResultMsg }) {
     none: 'No match',
   };
   const tone = isNone
-    ? 'border-zinc-700 bg-zinc-800/60 text-zinc-400'
-    : 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200';
+    ? 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-faint)]'
+    : 'border-[var(--accent-ring)] bg-[var(--accent-soft)] text-[var(--accent)]';
   const usedWhisper = result.transcribe_source === 'whisper';
   return (
     <div className="mt-3 flex flex-col gap-1.5 text-[11px]">
       {/* Transcript line — shows what STT (or the user's keyboard)
           actually produced, separately from the routed action. */}
       {result.transcript && (
-        <div className="font-mono text-zinc-400">
-          <span className="text-zinc-600">heard:</span> "{result.transcript}"
+        <div className="font-mono text-[var(--text-muted)]">
+          <span className="text-[var(--text-faint)]">heard:</span> "
+          {result.transcript}"
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
         <span
-          className={'rounded-full border px-2 py-0.5 uppercase tracking-wider ' + tone}
+          className={
+            'rounded-full border px-2 py-0.5 uppercase tracking-wider ' + tone
+          }
         >
           → {actionLabel[result.action]}
         </span>
-        <span className="font-mono text-zinc-500">
+        <span className="font-mono text-[var(--text-faint)]">
           {Math.round(result.confidence * 100)}% confidence
         </span>
         {usedWhisper && result.transcribe_latency_ms !== null && (
-          <span className="font-mono text-zinc-500">
+          <span className="font-mono text-[var(--text-faint)]">
             Whisper {result.transcribe_latency_ms} ms
           </span>
         )}
-        <span className="font-mono text-zinc-500">
+        <span className="font-mono text-[var(--text-faint)]">
           {sourceLabel} {result.latency_ms} ms
         </span>
         {!result.intent_model_loaded && result.source === 'heuristic' && (
-          <span className="text-[10px] italic text-amber-400/80">
+          <span className="text-[10px] italic text-[var(--warning)]">
             (FunctionGemma still warming up)
           </span>
         )}
@@ -1715,8 +1852,8 @@ function SummaryCard({
   onRestart: () => void;
 }) {
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center">
-      <div className="text-xs uppercase tracking-wider text-zinc-500">
+    <div className="card p-8 text-center">
+      <div className="text-xs uppercase tracking-wider text-[var(--text-faint)]">
         Session summary
       </div>
       <div className="mt-3 grid grid-cols-3 gap-4 text-center">
@@ -1731,22 +1868,22 @@ function SummaryCard({
         />
       </div>
       {summary.json_failures > 0 && (
-        <div className="mt-3 text-xs text-amber-400">
+        <div className="mt-3 text-xs text-[var(--warning)]">
           {summary.json_failures} turn{summary.json_failures === 1 ? '' : 's'}{' '}
           had model parse errors.
         </div>
       )}
       {summary.rest_called && (
-        <div className="mt-3 text-xs text-sky-400">
+        <div className="mt-3 text-xs text-[var(--info)]">
           Ended early (rest requested).
         </div>
       )}
-      <div className="mt-5 break-all text-[10px] text-zinc-600">
+      <div className="mt-5 break-all text-[10px] text-[var(--text-faint)]">
         log: {summary.session_log}
       </div>
       <button
         onClick={onRestart}
-        className="mt-6 rounded-full bg-emerald-500 px-6 py-2 text-sm font-medium text-zinc-950 transition hover:bg-emerald-400"
+        className="mt-6 rounded-full bg-[var(--accent)] px-6 py-2 text-sm font-medium text-[var(--accent-fg)] transition hover:bg-[var(--accent-strong)]"
       >
         Run another session
       </button>
@@ -1756,21 +1893,21 @@ function SummaryCard({
 
 function Stat({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
-      <div className="text-2xl font-semibold">{value}</div>
-      <div className="mt-1 text-xs text-zinc-500">{label}</div>
+    <div className="card-soft p-4">
+      <div className="text-2xl font-semibold text-[var(--text)]">{value}</div>
+      <div className="mt-1 text-xs text-[var(--text-faint)]">{label}</div>
     </div>
   );
 }
 
 function ErrorCard({ message }: { message: string }) {
   return (
-    <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-6">
-      <div className="text-xs uppercase tracking-wider text-rose-300">
+    <div className="rounded-2xl border border-[var(--danger-soft)] bg-[var(--danger-soft)] p-6">
+      <div className="text-xs uppercase tracking-wider text-[var(--danger)]">
         Cannot continue
       </div>
-      <div className="mt-2 text-sm text-rose-100">{message}</div>
-      <div className="mt-3 text-xs text-rose-200/80">
+      <div className="mt-2 text-sm text-[var(--text)]">{message}</div>
+      <div className="mt-3 text-xs text-[var(--text-muted)]">
         Make sure the backend started cleanly. Run <code>./run-web</code> from
         the repo root.
       </div>
@@ -1787,7 +1924,7 @@ function TestVoiceRow() {
     setOk(fired);
   };
   return (
-    <div className="card flex items-center justify-between px-4 py-2 text-xs text-[#2d5a4a]">
+    <div className="card-soft flex items-center justify-between px-4 py-2 text-xs text-[var(--text-muted)]">
       <span>
         {!tested && 'Quick check: does your browser play voice?'}
         {tested && ok && (
@@ -1797,14 +1934,14 @@ function TestVoiceRow() {
           </>
         )}
         {tested && ok === false && (
-          <span className="text-rose-300">
+          <span className="text-[var(--danger)]">
             Could not start a TTS utterance. Try Chrome/Edge/Safari.
           </span>
         )}
       </span>
       <button
         onClick={onTest}
-        className="ml-3 shrink-0 rounded-full border border-[#1a6b45]/20 bg-white/30 px-3 py-1 text-[#1a6b45] transition hover:bg-white/50"
+        className="ml-3 shrink-0 rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-3 py-1 text-[var(--accent)] transition hover:bg-[var(--surface)]"
       >
         🔊 Test voice
       </button>

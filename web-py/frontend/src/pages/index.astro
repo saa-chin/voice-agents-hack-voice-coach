@@ -8,7 +8,16 @@ import CoachApp from '../components/CoachApp';
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#bdd9d2" />
+    <meta
+      name="theme-color"
+      content="#f3f6f5"
+      media="(prefers-color-scheme: light)"
+    />
+    <meta
+      name="theme-color"
+      content="#09090b"
+      media="(prefers-color-scheme: dark)"
+    />
     <title>Voice Coach — on-device speech practice</title>
     <meta
       name="description"
@@ -16,8 +25,34 @@ import CoachApp from '../components/CoachApp';
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      Set the theme class BEFORE first paint so we never flash the wrong
+      palette on hydration. Mirrors the runtime logic in ThemeToggle.
+    -->
+    <script is:inline>
+      (function () {
+        try {
+          var stored = localStorage.getItem('vc-theme');
+          var prefersDark =
+            window.matchMedia &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var theme = stored === 'dark' || stored === 'light'
+            ? stored
+            : prefersDark
+            ? 'dark'
+            : 'light';
+          if (theme === 'dark') document.documentElement.classList.add('dark');
+          else document.documentElement.classList.remove('dark');
+        } catch (_) {
+          /* ignore */
+        }
+      })();
+    </script>
   </head>
   <body>
     <!--
@@ -27,7 +62,10 @@ import CoachApp from '../components/CoachApp';
       would cause hydration mismatches that destabilise the speech engine.
     -->
     <CoachApp client:only="react">
-      <div slot="fallback" class="mx-auto max-w-2xl px-6 py-10 text-zinc-500">
+      <div
+        slot="fallback"
+        class="mx-auto max-w-2xl px-6 py-10 text-[var(--text-muted)]"
+      >
         Loading interface…
       </div>
     </CoachApp>
