@@ -10,3 +10,14 @@
 22:06:30 [200] / 3ms
 22:06:53 [200] / 6ms
 22:07:09 [200] / 6ms
+22:08:06 [200] / 5ms
+22:10:40 [200] / 5ms
+22:10:54 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+22:11:02 [200] / 3ms
+22:11:19 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+22:11:32 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+22:12:00 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+22:12:07 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+22:12:14 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+22:12:18 [watch] src/env.d.ts
+22:12:18 [200] / 7ms

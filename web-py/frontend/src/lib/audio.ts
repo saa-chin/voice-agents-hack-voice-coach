@@ -188,8 +188,18 @@ export function int16ToBase64(pcm: Int16Array): string {
 }
 
 // ---- TTS ------------------------------------------------------------------
+//
+// Browsers (Chrome, Safari) require the FIRST `speechSynthesis.speak()` of a
+// session to happen inside a user-gesture handler. We call `speak()` from
+// async WebSocket message handlers — way too late to count as a gesture. The
+// fix is `primeTTS()`: call it from a click handler to "unlock" subsequent
+// async speak() calls. We also report whether TTS appears to be working so
+// the UI can show a hint when it isn't.
 
 let preferredVoice: SpeechSynthesisVoice | null = null;
+let primed = false;
+let lastSpeakOk = true;
+let lastSpeakError: string | null = null;
 
 function ensureVoice(): SpeechSynthesisVoice | null {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
@@ -201,25 +211,83 @@ function ensureVoice(): SpeechSynthesisVoice | null {
     voices.find((v) => preferredNames.includes(v.name) && v.lang.startsWith('en')) ??
     voices.find((v) => v.lang.startsWith('en')) ??
     voices[0];
+  console.log('[coach tts] selected voice:', preferredVoice?.name, preferredVoice?.lang);
   return preferredVoice;
 }
 
-export function speak(text: string): void {
+/**
+ * Prime the speech engine inside a user-gesture handler. Speaks a near-silent
+ * single-space utterance so the browser registers an explicit user intent for
+ * audio playback. After this, async speak() calls work without UA blocking.
+ *
+ * Safe to call multiple times. No-op once primed.
+ */
+export function primeTTS(): void {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-  if (!text.trim()) return;
-  // Cancel anything currently speaking so the latest line wins.
-  window.speechSynthesis.cancel();
-  const utter = new SpeechSynthesisUtterance(text);
-  const v = ensureVoice();
-  if (v) utter.voice = v;
-  utter.rate = 0.95;
-  utter.pitch = 1.0;
-  utter.volume = 1.0;
-  window.speechSynthesis.speak(utter);
+  if (primed) return;
+  try {
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0.01;
+    u.rate = 1.0;
+    window.speechSynthesis.speak(u);
+    primed = true;
+    console.log('[coach tts] primed');
+  } catch (e) {
+    console.warn('[coach tts] prime failed', e);
+  }
+}
+
+export function speak(text: string): void {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    console.warn('[coach tts] speechSynthesis unavailable');
+    lastSpeakOk = false;
+    lastSpeakError = 'speechSynthesis API not present in this browser';
+    return;
+  }
+  const trimmed = text.trim();
+  if (!trimmed) return;
+
+  try {
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(trimmed);
+    const v = ensureVoice();
+    if (v) utter.voice = v;
+    utter.rate = 0.95;
+    utter.pitch = 1.0;
+    utter.volume = 1.0;
+    utter.onstart = () => {
+      lastSpeakOk = true;
+      lastSpeakError = null;
+      console.log('[coach tts] speaking:', trimmed);
+    };
+    utter.onerror = (ev) => {
+      const reason = (ev as SpeechSynthesisErrorEvent).error || 'unknown';
+      lastSpeakOk = false;
+      lastSpeakError = reason;
+      console.warn('[coach tts] error:', reason, 'on:', trimmed);
+    };
+    window.speechSynthesis.speak(utter);
+  } catch (e) {
+    lastSpeakOk = false;
+    lastSpeakError = e instanceof Error ? e.message : String(e);
+    console.error('[coach tts] threw', e);
+  }
 }
 
 export function cancelSpeech(): void {
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
+    try {
+      window.speechSynthesis.cancel();
+    } catch {
+      /* ignore */
+    }
   }
+}
+
+export function isTTSAvailable(): boolean {
+  return typeof window !== 'undefined' && 'speechSynthesis' in window;
+}
+
+export function getTTSStatus(): { ok: boolean; primed: boolean; lastError: string | null } {
+  return { ok: lastSpeakOk, primed, lastError: lastSpeakError };
 }

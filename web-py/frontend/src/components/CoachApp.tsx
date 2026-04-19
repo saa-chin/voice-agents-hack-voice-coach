@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   cancelSpeech,
   createRecorder,
   int16ToBase64,
+  isTTSAvailable,
+  primeTTS,
   speak,
   type RecorderHandle,
 } from '../lib/audio';
@@ -16,9 +18,21 @@ import {
   type SummaryMsg,
 } from '../lib/ws';
 
-const BACKEND_WS_URL =
-  (import.meta as any).env?.PUBLIC_BACKEND_WS_URL ??
-  'ws://127.0.0.1:8765/ws/coach';
+const BACKEND_PORT =
+  (import.meta as any).env?.PUBLIC_BACKEND_PORT ?? '8765';
+
+function resolveWsUrl(): string {
+  const explicit = (import.meta as any).env?.PUBLIC_BACKEND_WS_URL;
+  if (explicit) return explicit;
+  if (typeof window !== 'undefined' && window.location?.hostname) {
+    // Use whatever hostname the page was loaded with (localhost vs 127.0.0.1
+    // both work, but the browser is strict about mixed-origin WebSockets).
+    return `ws://${window.location.hostname}:${BACKEND_PORT}/ws/coach`;
+  }
+  return `ws://127.0.0.1:${BACKEND_PORT}/ws/coach`;
+}
+
+const BACKEND_WS_URL = resolveWsUrl();
 
 type Phase =
   | 'connecting'
@@ -48,39 +62,64 @@ export default function CoachApp() {
   const [summary, setSummary] = useState<SummaryMsg['summary'] | null>(null);
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [transientError, setTransientError] = useState<string | null>(null);
+  const [wsState, setWsState] = useState<string>('CONNECTING');
   const [, forceTick] = useState(0);
 
   const wsRef = useRef<Connection | null>(null);
   const recRef = useRef<RecorderHandle | null>(null);
   const levelTimer = useRef<number | null>(null);
+  // Track current phase via ref so async WS handlers don't read stale state.
+  const phaseRef = useRef<Phase>('connecting');
+  // StrictMode in dev runs effects twice. Without a guard we open two WS
+  // connections per mount, which the server logs show happening.
+  const wsInitialized = useRef(false);
+
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
 
   // ---- WS lifecycle ------------------------------------------------------
 
   useEffect(() => {
-    const ws = connect(
-      BACKEND_WS_URL,
-      handleServerMessage,
-      ({ code, reason }) => {
-        if (phase !== 'done' && phase !== 'error') {
+    if (wsInitialized.current) {
+      console.log('[coach] StrictMode re-mount: skipping duplicate connect');
+      return;
+    }
+    wsInitialized.current = true;
+
+    const ws = connect(BACKEND_WS_URL, handleServerMessage, {
+      onCloseOrError: ({ code, reason, clean }) => {
+        const p = phaseRef.current;
+        setWsState('CLOSED');
+        if (p !== 'done' && p !== 'error') {
           setErrMsg(
-            `Lost connection to coach server (code ${code}${reason ? `: ${reason}` : ''}).`,
+            `Lost connection to coach server (code ${code}${reason ? `: ${reason}` : ''}${clean ? '' : ', not clean'}).`,
           );
           setPhase('error');
         }
       },
-    );
-    wsRef.current = ws;
-    ws.ready.catch(() => {
-      setErrMsg(
-        `Could not reach coach server at ${BACKEND_WS_URL}. Is the backend running?`,
-      );
-      setPhase('error');
+      onSendError: (err, msg) => {
+        setTransientError(`Could not send ${msg.type}: ${err.message}`);
+      },
     });
+    wsRef.current = ws;
+    ws.ready
+      .then(() => setWsState('OPEN'))
+      .catch((e) => {
+        console.error('[coach] ws.ready rejected', e);
+        setErrMsg(
+          `Could not reach coach server at ${BACKEND_WS_URL}. Is the backend running?`,
+        );
+        setPhase('error');
+      });
+
     return () => {
+      console.log('[coach] cleanup: closing WS');
       ws.close();
       cancelSpeech();
       recRef.current?.cancel();
       if (levelTimer.current !== null) window.clearInterval(levelTimer.current);
+      wsInitialized.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -90,11 +129,13 @@ export default function CoachApp() {
       case 'loading':
         setPhase('loading');
         return;
-      case 'ready':
-        if (phase !== 'drill' && phase !== 'recording' && phase !== 'thinking') {
+      case 'ready': {
+        const p = phaseRef.current;
+        if (p !== 'drill' && p !== 'recording' && p !== 'thinking') {
           setPhase('ready');
         }
         return;
+      }
       case 'drill':
         setDrill(msg);
         setMetrics(null);
@@ -136,9 +177,18 @@ export default function CoachApp() {
   // ---- User actions ------------------------------------------------------
 
   const startSession = () => {
+    console.log('[coach] startSession clicked, ws state =', wsRef.current?.state());
     setSummary(null);
     setErrMsg(null);
-    wsRef.current?.send({ type: 'start_session' });
+    setTransientError(null);
+    // Prime the speech engine while we still have a user-gesture context.
+    // Subsequent speak() calls from async WS handlers will be allowed.
+    primeTTS();
+    if (!wsRef.current) {
+      setTransientError('No WebSocket connection. Reload the page.');
+      return;
+    }
+    wsRef.current.send({ type: 'start_session' });
   };
 
   const startRecording = async () => {
@@ -194,9 +244,15 @@ export default function CoachApp() {
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col px-6 py-10">
-      <Header />
+      <Header wsState={wsState} />
 
       <section className="flex flex-1 flex-col gap-4">
+        {!isTTSAvailable() && (
+          <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-200">
+            This browser doesn't expose <code>speechSynthesis</code>. The coach
+            will be silent — try Chrome, Edge, or Safari.
+          </div>
+        )}
         {phase === 'connecting' && (
           <StatusCard label="Connecting to local coach…" spinner />
         )}
@@ -242,13 +298,28 @@ export default function CoachApp() {
 
 // ---- Sub-components -------------------------------------------------------
 
-function Header() {
+function Header({ wsState }: { wsState: string }) {
+  const dotColor =
+    wsState === 'OPEN'
+      ? 'bg-emerald-400'
+      : wsState === 'CONNECTING'
+      ? 'bg-amber-400'
+      : 'bg-rose-500';
   return (
-    <header className="mb-8">
-      <h1 className="text-3xl font-semibold tracking-tight">Voice Coach</h1>
-      <p className="mt-1 text-sm text-zinc-400">
-        On-device speech practice. Powered by Gemma 4 + Cactus.
-      </p>
+    <header className="mb-8 flex items-start justify-between">
+      <div>
+        <h1 className="text-3xl font-semibold tracking-tight">Voice Coach</h1>
+        <p className="mt-1 text-sm text-zinc-400">
+          On-device speech practice. Powered by Gemma 4 + Cactus.
+        </p>
+      </div>
+      <div
+        className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-wider text-zinc-500"
+        title={`WebSocket: ${wsState}`}
+      >
+        <span className={`inline-block h-2 w-2 rounded-full ${dotColor}`} />
+        {wsState}
+      </div>
     </header>
   );
 }

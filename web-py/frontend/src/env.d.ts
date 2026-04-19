@@ -3,6 +3,7 @@
 
 interface ImportMetaEnv {
   readonly PUBLIC_BACKEND_WS_URL?: string;
+  readonly PUBLIC_BACKEND_PORT?: string;
 }
 
 interface ImportMeta {

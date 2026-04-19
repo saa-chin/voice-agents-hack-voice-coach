@@ -27,3 +27,63 @@ INFO:     127.0.0.1:57876 - "WebSocket /ws/coach" [accepted]
 22:07:09 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=57876)
 22:07:09 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T050709Z.jsonl
 INFO:     connection open
+22:08:06 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:57908 - "WebSocket /ws/coach" [accepted]
+22:08:06 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=57908)
+22:08:06 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T050806Z.jsonl
+INFO:     connection open
+22:10:40 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:57949 - "WebSocket /ws/coach" [accepted]
+22:10:40 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=57949)
+22:10:40 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T051040Z.jsonl
+INFO:     connection open
+22:10:55 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:57976 - "WebSocket /ws/coach" [accepted]
+22:10:55 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=57976)
+22:10:55 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T051055Z.jsonl
+INFO:     connection open
+22:11:02 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:57987 - "WebSocket /ws/coach" [accepted]
+22:11:02 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=57987)
+22:11:02 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T051102Z.jsonl
+INFO:     connection open
+22:11:20 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:57998 - "WebSocket /ws/coach" [accepted]
+22:11:20 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=57998)
+22:11:20 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T051120Z.jsonl
+INFO:     connection open
+INFO:     127.0.0.1:58004 - "WebSocket /ws/coach" [accepted]
+22:11:33 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=58004)
+22:11:33 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T051133Z.jsonl
+22:11:33 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     connection open
+22:12:01 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:58026 - "WebSocket /ws/coach" [accepted]
+22:12:01 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=58026)
+22:12:01 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T051201Z.jsonl
+INFO:     connection open
+22:12:08 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:58034 - "WebSocket /ws/coach" [accepted]
+22:12:08 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=58034)
+22:12:08 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T051208Z.jsonl
+INFO:     connection open
+22:12:15 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:58040 - "WebSocket /ws/coach" [accepted]
+22:12:15 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=58040)
+22:12:15 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T051215Z.jsonl
+INFO:     connection open
+22:12:18 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:58047 - "WebSocket /ws/coach" [accepted]
+22:12:18 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=58047)
+22:12:18 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T051218Z.jsonl
+INFO:     connection open
