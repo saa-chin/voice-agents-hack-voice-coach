@@ -518,6 +518,52 @@ def test_ws_repeat_prompt_resends_current_drill(server):
 
 # ---- WebSocket: error paths --------------------------------------------
 
+def test_ws_audio_bin_accepts_binary_pcm_frame(server):
+    """The binary PCM upload path: client sends a JSON envelope
+    `{type: 'audio_bin', sample_rate: 16000}` followed by ONE binary
+    WS frame carrying the raw int16 LE PCM. Server treats it
+    identically to the legacy base64 `audio` path — same metrics, same
+    coach call, same coach response. ~25 % less wire bytes per turn."""
+    pcm = _silence_pcm(1.0)
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            drill0 = ws.receive_json()
+            assert drill0["type"] == "drill"
+
+            ws.send_json({"type": "audio_bin", "sample_rate": 16000})
+            ws.send_bytes(pcm)
+
+            metrics = ws.receive_json()
+            assert metrics["type"] == "metrics"
+            assert metrics["dbfs"] is not None
+            assert metrics["duration_s"] > 0
+
+            coach_msg = _drain_thinking(ws)
+            assert coach_msg["type"] == "coach"
+            assert coach_msg["next_action"] == "advance"
+
+    # The coach handler saw the same PCM byte count it would have
+    # received via the legacy base64 path (1 s @ 16 kHz int16 = 32000).
+    assert server["state"]["calls"][0]["pcm_len"] == 32000
+
+
+def test_ws_audio_bin_wrong_sample_rate_errors(server):
+    """sample_rate validation must run BEFORE awaiting the binary
+    frame so a misconfigured client gets a clean error instead of
+    hanging on an unread bytes frame."""
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill
+            ws.send_json({"type": "audio_bin", "sample_rate": 22050})
+            err = ws.receive_json()
+            assert err["type"] == "error"
+            assert "sample_rate" in err["message"]
+
+
 def test_ws_invalid_message_type_returns_error(server):
     with TestClient(server["app"]) as client:
         with client.websocket_connect("/ws/coach") as ws:
@@ -816,6 +862,34 @@ def test_ws_intent_empty_utterance_returns_none(server):
             ws.send_json({"type": "intent", "utterance": ""})
             res = ws.receive_json()
             assert res["action"] == "none"
+
+
+def test_gating_flags_default_off():
+    """Helper-model loads must be opt-in. Default install should only
+    bring up Gemma 4 — the regex HeuristicClassifier covers intents and
+    typed text covers voice commands. Loading FunctionGemma + Whisper
+    by default cost ~30 s warmup and ~250 MB RAM for marginal gain."""
+    from app import main as srv
+    assert srv.ENABLE_INTENT_LLM is False
+    assert srv.ENABLE_WHISPER is False
+
+
+def test_env_truthy_helper_recognises_common_truthy_values():
+    from app import main as srv
+    for v in ("1", "true", "TRUE", "yes", "on", "On"):
+        import os
+        os.environ["__TEST_FLAG__"] = v
+        try:
+            assert srv._env_truthy("__TEST_FLAG__"), v
+        finally:
+            del os.environ["__TEST_FLAG__"]
+    for v in ("", "0", "false", "no", "off", "anything-else"):
+        import os
+        os.environ["__TEST_FLAG__"] = v
+        try:
+            assert not srv._env_truthy("__TEST_FLAG__"), v
+        finally:
+            del os.environ["__TEST_FLAG__"]
 
 
 def test_health_reports_intent_holder_status(server):
@@ -1121,6 +1195,98 @@ def test_build_drill_tts_combines_note_then_prompt(server):
     # Cue with trailing punctuation gets cleaned before the period.
     out2 = srv._build_drill_tts("Hi", "Read the phrase aloud!! ")
     assert out2 == "Read the phrase aloud. Now: Hi."
+
+
+def test_ws_audio_reply_streams_one_chunk_per_sentence(server, monkeypatch):
+    """The coach reply ("Strong voice. Same energy on the next one.")
+    must arrive as TWO `audio_reply` frames — one per sentence — so the
+    browser can start playing chunk 0 while chunk 1 is still rendering.
+    The last frame must carry is_final=True; earlier frames is_final=False."""
+    from app import main as srv
+
+    # _say_to_wav also gets called for the drill prompt itself, so we
+    # match by substring rather than exact key. Anything not from the
+    # coach reply (drill prompts, etc.) returns generic bytes that the
+    # test doesn't assert against.
+    def fake_say(text: str) -> bytes:
+        s = (text or "").strip()
+        if s == "Strong voice.":
+            return b"WAV1"
+        if s == "Same energy on the next one.":
+            return b"WAV2"
+        return b"PROMPT"
+
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+    monkeypatch.setattr(srv, "_say_to_wav", fake_say)
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
+            ws.receive_json()  # metrics
+            assert _drain_thinking(ws)["type"] == "coach"
+
+            chunks: list[dict] = []
+            while True:
+                msg = _drain_thinking(ws)
+                if msg["type"] == "audio_reply":
+                    chunks.append(msg)
+                    if msg.get("is_final"):
+                        break
+                else:
+                    break
+            assert len(chunks) == 2, f"expected 2 chunks, got {len(chunks)}"
+            assert [c["chunk_index"] for c in chunks] == [0, 1]
+            assert [c["is_final"] for c in chunks] == [False, True]
+            assert base64.b64decode(chunks[0]["wav_b64"]) == b"WAV1"
+            assert base64.b64decode(chunks[1]["wav_b64"]) == b"WAV2"
+
+
+def test_ws_audio_reply_single_chunk_marks_is_final(server, monkeypatch):
+    """When ack/feedback render to one sentence, we still emit one
+    audio_reply with chunk_index=0 and is_final=True. Clients can rely
+    on is_final to release the 'speaking' UI."""
+    from app import main as srv
+
+    server["state"]["responses"] = [json.dumps({
+        "heard": "ah",
+        # ack is empty → joined spoken text is just the feedback.
+        "ack": "",
+        "feedback": "Same energy.",
+        "next_action": "advance",
+        "metrics_observed": {"matched_prompt": True},
+    })]
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+    monkeypatch.setattr(srv, "_say_to_wav", lambda _t: b"OK")
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
+            ws.receive_json()  # metrics
+            assert _drain_thinking(ws)["type"] == "coach"
+            audio = _drain_thinking(ws)
+            assert audio["type"] == "audio_reply"
+            assert audio["chunk_index"] == 0
+            assert audio["is_final"] is True
+
+
+def test_split_for_streaming_tts_handles_unfinished_sentence(server):
+    """Trailing fragment with no terminal `.!?` must still ship as a
+    chunk so we don't drop the tail of a reply."""
+    from app import main as srv
+    out = srv._split_for_streaming_tts("Strong voice. Try again")
+    assert out == ["Strong voice.", "Try again"]
+
+
+def test_split_for_streaming_tts_empty_input(server):
+    from app import main as srv
+    assert srv._split_for_streaming_tts("") == []
+    assert srv._split_for_streaming_tts("   ") == []
 
 
 def test_ws_no_audio_reply_when_say_returns_none(server, monkeypatch):

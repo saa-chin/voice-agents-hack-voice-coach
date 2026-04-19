@@ -114,6 +114,58 @@ class TestParseCoachJson:
     def test_empty_returns_none(self):
         assert coach.parse_coach_json("") is None
 
+    def test_normalises_compact_field_names(self):
+        """The slim COACH_SESSION_PREAMBLE asks Gemma to emit compact
+        keys (h/m/a/f/n) so we burn fewer decode tokens. The parser
+        must promote them to the canonical long names so the rest of
+        the pipeline (validator, enforcer, WS payload) keeps working."""
+        compact = {
+            "h": "ah",
+            "m": 1,
+            "a": "Strong voice.",
+            "f": "Same energy on the next one.",
+            "n": "advance",
+        }
+        out = coach.parse_coach_json(json.dumps(compact))
+        assert out["heard"] == "ah"
+        assert out["ack"] == "Strong voice."
+        assert out["feedback"] == "Same energy on the next one."
+        assert out["next_action"] == "advance"
+        assert out["metrics_observed"]["matched_prompt"] is True
+        # Compact keys gone — no duplicate fields.
+        for k in ("h", "m", "a", "f", "n"):
+            assert k not in out
+
+    def test_compact_m_zero_maps_to_matched_prompt_false(self):
+        """m=0 (mismatch) must reach the strict-matching enforcer as
+        matched_prompt=False so a praise-y ack still gets scrubbed."""
+        compact = {
+            "h": "thank you",
+            "m": 0,
+            "a": "Great job!",
+            "f": "moving on",
+            "n": "advance",
+        }
+        out = coach.validate_coach_json(coach.parse_coach_json(json.dumps(compact)))
+        assert out is not None
+        # Enforcer kicked in: action flipped to retry, praise scrubbed.
+        assert out["next_action"] == "retry"
+        assert "great job" not in out["ack"].lower()
+
+    def test_compact_keys_inside_cactus_envelope(self):
+        """Envelope unwrap + compact-key normalisation must compose."""
+        envelope = {
+            "success": True,
+            "response": json.dumps({
+                "h": "ah", "m": 1, "a": "Clear and full.",
+                "f": "Same energy on the next one.", "n": "advance",
+            }),
+        }
+        out = coach.parse_coach_json(json.dumps(envelope))
+        assert out["heard"] == "ah"
+        assert out["ack"] == "Clear and full."
+        assert out["next_action"] == "advance"
+
 
 # ---- validate_coach_json --------------------------------------------------
 
@@ -352,33 +404,23 @@ class TestBuildPrompt:
         assert "-90" in out
 
     def test_mentions_json_only(self, warmup_drill):
+        """Slim prompt MUST still document the schema. We accept either
+        the canonical long field names OR the compact aliases (h/m/a/f/n)
+        — the model is free to emit either, the parser normalises both."""
         out = coach.build_prompt(warmup_drill, -20.0, 1.0)
         assert "JSON" in out
-        for key in ("ack", "feedback", "next_action", "metrics_observed", "heard"):
+        # Compact field names are present in COACH_SESSION_PREAMBLE.
+        for key in ("h", "m", "a", "f", "n"):
+            assert f'"{key}"' in out
+        # And the canonical long names appear in the explanation block
+        # so the model knows what they map to.
+        for key in ("heard", "ack", "feedback", "next_action", "matched_prompt"):
             assert key in out
 
     def test_includes_exercise_name(self, warmup_drill):
         out = coach.build_prompt(warmup_drill, -20.0, 1.0)
         # `warmup_drill` is the LSVT canonical sustained-AH exercise.
         assert "Long AH" in out
-
-    def test_includes_focus_when_present(self, main_task_drill):
-        out = coach.build_prompt(main_task_drill, -15.0, 5.0)
-        assert main_task_drill.focus in out
-        assert "Focus:" in out
-
-    def test_omits_focus_line_when_absent(self, warmup_drill):
-        # Warmup phase has no `focus` field in the JSON.
-        assert warmup_drill.focus == ""
-        out = coach.build_prompt(warmup_drill, -20.0, 1.0)
-        assert "Focus:" not in out
-
-    def test_falls_back_to_prompt_when_note_empty(self, warmup_drill):
-        """For instruction-only phases, note is empty — phase cue should still appear."""
-        assert warmup_drill.note == ""
-        out = coach.build_prompt(warmup_drill, -20.0, 1.0)
-        # The phase_instruction line uses prompt as the cue, so it appears.
-        assert "Phase cue:" in out
 
     def test_unknown_stage_label_falls_back_gracefully(self):
         """Custom drills with unknown stages should still render readable prompts."""
@@ -387,6 +429,30 @@ class TestBuildPrompt:
         out = coach.build_prompt(d, -20.0, 1.0)
         # Underscores get replaced with spaces in the displayed label.
         assert "custom stage" in out
+
+    def test_session_preamble_is_constant(self):
+        """The session preamble must NOT vary by drill — that's what
+        lets us pin it in Cactus's KV cache once per session and only
+        prefill the small per-drill delta on subsequent turns."""
+        a = content.Drill(stage="warmup", index=0, prompt="ah",
+                          exercise_name="One")
+        b = content.Drill(stage="main_task", index=3, prompt="help",
+                          exercise_name="Two")
+        # Same preamble ID, regardless of drill.
+        out_a = coach.build_prompt(a, -20.0, 1.0)
+        out_b = coach.build_prompt(b, -15.0, 2.5)
+        # Both contain the preamble text byte-for-byte.
+        assert coach.COACH_SESSION_PREAMBLE in out_a
+        assert coach.COACH_SESSION_PREAMBLE in out_b
+
+    def test_drill_prompt_is_small(self):
+        """Per-turn delta must be tiny — that's the whole point of the
+        split. Cap is a soft 400 chars (vs the old 3 000-token system
+        prompt). Bumps need a deliberate reason."""
+        d = content.Drill(stage="main_task", index=0, prompt="Help",
+                          exercise_name="LSVT functional")
+        delta = coach.build_drill_prompt(d, -19.0, 2.0)
+        assert len(delta) < 400, f"per-drill delta grew to {len(delta)} chars"
 
 
 # ---- _join_for_speech ----------------------------------------------------

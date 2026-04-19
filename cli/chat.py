@@ -221,30 +221,7 @@ def stop_speaking() -> None:
             _SAY_PROCESS.terminate()
 
 
-def _split_sentences(text: str) -> tuple[list[str], str]:
-    """Return (complete sentences, leftover). Splits on .!? + space/EOL."""
-    out: list[str] = []
-    buf = ""
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        buf += ch
-        if ch in ".!?":
-            j = i + 1
-            while j < len(text) and text[j] in ".!?\"')]":
-                buf += text[j]
-                j += 1
-            if j >= len(text) or text[j] in " \n\t":
-                out.append(buf.strip())
-                buf = ""
-                if j < len(text):
-                    j += 1
-                i = j
-                continue
-            i = j
-            continue
-        i += 1
-    return out, buf
+from _tts import split_sentences as _split_sentences  # shared helper
 
 
 def _cactus_complete_audio(  # pragma: no cover - direct ctypes FFI; needs libcactus.dylib loaded

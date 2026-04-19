@@ -548,11 +548,19 @@ export default function CoachApp() {
         setPhase('drill');
         return;
       }
-      wsRef.current?.send({
-        type: 'audio',
-        pcm_b64: int16ToBase64(pcm),
-        sample_rate: 16000,
-      });
+      // Binary PCM upload: send a tiny JSON envelope, then the raw
+      // Int16 buffer as ONE binary frame. This is ~25 % less wire
+      // bytes than the legacy `pcm_b64` form and removes the
+      // base64/JSON parse cost on both sides — it's a measurable win
+      // on 5–10 s utterances (~160–320 KB raw PCM each).
+      wsRef.current?.send({ type: 'audio_bin', sample_rate: 16000 });
+      // pcm.buffer may be a SharedArrayBuffer in some browsers — slice
+      // copies into a fresh ArrayBuffer that WebSocket.send accepts.
+      const buf = pcm.buffer.slice(
+        pcm.byteOffset,
+        pcm.byteOffset + pcm.byteLength,
+      ) as ArrayBuffer;
+      wsRef.current?.sendBinary(buf);
     } catch (exc: any) {
       console.error('[coach] stopRecording failed', exc);
       setTransientError(`Capture error: ${exc?.message ?? exc}`);

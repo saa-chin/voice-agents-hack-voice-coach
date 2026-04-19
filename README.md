@@ -8,6 +8,7 @@
 | 2 | [The Solution](./docs/02-the-solution.md) |
 | 3 | [The Architecture](./docs/03-the-architecture.md) |
 | 4 | [Implementation Details](./docs/04-implementation-details.md) |
+| 4.10 | [Cactus-style optimization (arch + sequence diagrams)](./docs/04-implementation-details.md#10-cactus-style-optimization-april-2026) |
 
 ## Context
 - Cactus (YC S25) is a low-latency engine for mobile devices & wearables. 

@@ -48,11 +48,19 @@ class FakeWebSocket {
     this.fire('close', { code, reason, wasClean });
   }
 
-  send(data: string) {
+  // Mirror the real WebSocket: text frames go in `sent`, binary frames
+  // in `sentBinary`. Tests assert on each separately so they can prove
+  // a JSON envelope and the matching bytes both made it onto the wire.
+  sentBinary: ArrayBufferLike[] = [];
+  send(data: string | ArrayBufferLike) {
     if (this.sendShouldThrow) {
       throw new Error('send blew up');
     }
-    this.sent.push(data);
+    if (typeof data === 'string') {
+      this.sent.push(data);
+    } else {
+      this.sentBinary.push(data);
+    }
   }
   close() {
     this.closed = true;
@@ -206,6 +214,44 @@ describe('close()', () => {
     lastWS().triggerOpen();
     c.close();
     expect(lastWS().closed).toBe(true);
+  });
+});
+
+describe('sendBinary()', () => {
+  it('sends bytes as a single binary frame when OPEN', async () => {
+    const c = connect('ws://example/test', () => {});
+    lastWS().triggerOpen();
+    await c.ready;
+    const buf = new Uint8Array([1, 2, 3, 4]).buffer;
+    c.sendBinary(buf);
+    expect(lastWS().sentBinary).toEqual([buf]);
+    // No JSON frame piggybacks: caller is responsible for sending the
+    // envelope separately right before this.
+    expect(lastWS().sent).toEqual([]);
+  });
+
+  it('reports a clear error when called before OPEN', () => {
+    const errors: Array<[Error, ClientMessage]> = [];
+    const c = connect('ws://example/test', () => {}, {
+      onSendError: (err, msg) => errors.push([err, msg]),
+    });
+    // No triggerOpen — socket is still CONNECTING.
+    c.sendBinary(new Uint8Array([1]).buffer);
+    expect(errors).toHaveLength(1);
+    expect(errors[0][0].message).toMatch(/cannot send binary frame/);
+    expect(lastWS().sentBinary).toEqual([]);
+  });
+
+  it('logs the byte size for binary uploads', async () => {
+    const c = connect('ws://example/test', () => {});
+    lastWS().triggerOpen();
+    await c.ready;
+    c.sendBinary(new Uint8Array(1024).buffer);
+    const binLog = (console.log as any).mock.calls.find(
+      (args: unknown[]) => args[0] === '[coach ws] → <binary>',
+    );
+    expect(binLog).toBeDefined();
+    expect(binLog?.[1]).toMatchObject({ bytes: 1024 });
   });
 });
 

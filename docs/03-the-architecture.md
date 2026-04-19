@@ -105,6 +105,8 @@ sequenceDiagram
     Note over P,TTS: Total perceived latency: < 1s from end of utterance to start of feedback
 ```
 
+> The first end-to-end build measured ~10–12 s per turn against this budget — a ~10× miss. The fix kept Gemma 4 audio-native and changed *how* we drive Cactus, not what model we use. See [Implementation §10 — Cactus-style optimization](04-implementation-details.md#10-cactus-style-optimization-april-2026) for the diagrams, measurements, and source map.
+
 ## The cloud boundary
 
 The cloud is touched in exactly two places, both opt-in, both text-only:

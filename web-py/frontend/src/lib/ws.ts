@@ -163,12 +163,21 @@ export type ServerMessage =
 export type ClientMessage =
   | { type: 'start_session' }
   | { type: 'audio'; pcm_b64: string; sample_rate: number }
+  /** Binary PCM upload — the envelope is sent as JSON, the bytes are
+   * sent as ONE binary WebSocket frame immediately after via
+   * `sendBinary()`. Server reads `await ws.receive_bytes()` after this
+   * envelope. ~25 % less wire bytes than the `pcm_b64` form. */
+  | { type: 'audio_bin'; sample_rate: number }
   | { type: 'command'; action: 'skip' | 'rest' | 'repeat_prompt' }
   | { type: 'intent'; utterance: string }
   | { type: 'intent_audio'; pcm_b64: string; sample_rate: number };
 
 export interface Connection {
   send: (msg: ClientMessage) => void;
+  /** Send raw bytes as ONE binary WebSocket frame. The caller must have
+   * sent a JSON envelope (e.g. `audio_bin`) immediately before so the
+   * server knows what to do with the bytes. */
+  sendBinary: (data: ArrayBufferLike) => void;
   close: () => void;
   ready: Promise<void>;
   /** Current readyState as a friendly string. */
@@ -279,6 +288,30 @@ export function connect(
         return;
       }
       doSend(msg);
+    },
+    sendBinary(data) {
+      // Binary frames are NOT queued — they only make sense paired
+      // with a JSON envelope that was sent immediately before, and
+      // out-of-order delivery would desync the server-side state
+      // machine. Caller is expected to await ready before sending.
+      if (!opened || ws.readyState !== WebSocket.OPEN) {
+        const err = new Error(
+          `cannot send binary frame in state ${STATES[ws.readyState]} ` +
+            `(send the JSON envelope first AFTER ready resolves)`,
+        );
+        console.error('[coach ws] sendBinary failed', err);
+        opts.onSendError?.(err, { type: 'audio_bin', sample_rate: 16000 });
+        return;
+      }
+      try {
+        ws.send(data);
+        const bytes = (data as ArrayBuffer).byteLength;
+        console.log('[coach ws] → <binary>', { bytes });
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        console.error('[coach ws] binary send failed', err);
+        opts.onSendError?.(err, { type: 'audio_bin', sample_rate: 16000 });
+      }
     },
     close() {
       try {

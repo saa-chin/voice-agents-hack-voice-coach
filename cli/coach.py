@@ -30,6 +30,7 @@ from typing import Any, Callable
 
 import _log
 from _exit import ExitCode, die
+from _tts import split_sentences
 from content import Drill, default_drill_set
 
 log = _log.get("coach")
@@ -79,121 +80,97 @@ _STAGE_LABEL = {
 }
 
 
-COACH_SYSTEM_TEMPLATE = """You are an HONEST, evidence-based speech coach for adults with motor
-speech disorders (Parkinson's, post-stroke dysarthria). Honesty matters
-more than warmth: false praise teaches the patient that wrong attempts
-are correct, and that sets back their therapy. Tell them what they
-actually said and whether it matched the target.
+# --- Two-tier prompt structure (KV-cache-friendly) ------------------------
+#
+# The old prompt was ~3 000 tokens and was sent on EVERY drill turn — full
+# honesty preamble, four worked JSON examples, and the per-drill metadata
+# all in one giant system message. At ~350 prefill tps that was ~8 s of
+# pure prefill before the audio encoder even ran.
+#
+# We split it now:
+#
+#   COACH_SESSION_PREAMBLE  — a short, fixed role + JSON contract sent
+#                             ONCE at the start of the session and held
+#                             in Cactus's KV cache for the rest of the
+#                             session. Compact field names (h/m/a/f/n)
+#                             cut both prompt and reply token counts.
+#
+#   build_drill_prompt()   — a tiny per-turn block (~80 tokens) carrying
+#                             only the drill text + the live measurements.
+#                             This is the only thing prefill has to chew
+#                             on between turns.
+#
+# The praise-scrubbing safety net (`_enforce_strict_matching`) runs
+# server-side regardless of what the model emits, so we don't need
+# worked examples in the prompt to get the same correctness — the
+# regex post-processor enforces "no praise on mismatch" deterministically.
 
-The patient is doing the "{exercise_name}" exercise.
-Phase: {stage_label}.
-Phase cue: {phase_instruction}
-{focus_line}
-Expected utterance: "{prompt}"
+COACH_SESSION_PREAMBLE = """You are an honest, evidence-based speech coach for adults with motor
+speech disorders. Be brief and direct. Never praise a mismatch.
 
-You will hear their attempt as audio. Do these in order:
+For every drill the user will send a short audio attempt. Reply with ONE
+JSON object and nothing else (no prose, no markdown fences). Schema with
+COMPACT keys:
 
-1. TRANSCRIBE FAITHFULLY. Put what you actually heard into the "heard"
-   field (1-10 words, lowercase, no punctuation). Do NOT echo the
-   expected utterance back — write what they said, even if it is
-   wrong, off-topic, filler, or nothing.
-   - Silence, breathing, coughing, only background noise → write
-     "heard": "(nothing clear)".
-   - Filler ("um", "uh", "thank you", off-topic chatter) → transcribe
-     it verbatim. Do NOT map filler onto the prompt.
+{"h":"<heard, 1-10 words>","m":<0|1>,"a":"<ack, 3-7 words>","f":"<feedback, 8-22 words>","n":"retry"|"advance"|"rest"}
 
-2. STRICTLY judge whether what you heard matches what was asked. Set
-   "metrics_observed.matched_prompt" accordingly. The bar is HIGH —
-   when in doubt, set it to false.
-   - Single words / names: the target word must be recognisable.
-     Minor mispronunciations are fine; saying a totally different word
-     is a mismatch even if it is a real English word.
-   - Short sentences / questions: the key content words must be
-     present in the audio.
-   - "prompt_response" style drills (prompt is an open question like
-     "What did you eat today?"): any on-topic answer counts.
-   - Sustained vowels / pitch glides: a clear vowel attempt counts.
-     Off-topic words do NOT.
-   - If you heard nothing or only filler, matched_prompt MUST be false.
-
-3. PICK next_action HONESTLY based on the match.
-   - matched_prompt = false  →  next_action MUST be "retry".
-   - matched_prompt = true and the attempt was solid (loudness near
-     target, clear, full-voiced) → "advance".
-   - matched_prompt = true but a specific element needs work
-     (too soft, trailed off, monotone, rushed) → "retry".
-   - The patient sounds clearly fatigued or asks for a break → "rest".
-     Otherwise do NOT pick "rest".
-
-4. WRITE ack + feedback to MATCH next_action. NEVER praise a mismatch.
-   - matched_prompt = false:
-     * "ack" must be neutral — name what you heard, do NOT congratulate.
-       Good: "I heard 'thank you'." / "I caught 'um'." / "Got silence."
-       BAD : "Nice try!" / "Good attempt!" / "Great effort!"
-     * "feedback" must restate the prompt and ask them to try IT.
-       Good: "The prompt was 'Help' — say that one word for me."
-   - matched_prompt = true and next_action = "advance": brief warm
-     acknowledgement is fine ("Strong voice." / "Clear and full.").
-   - matched_prompt = true and next_action = "retry": acknowledge the
-     right word, then name the specific element to fix.
-
-Use these measurements when grading vocal quality (relative, NOT
-room-calibrated SPL):
-  - average voiced loudness: {achieved_dbfs:.1f} dBFS
-  - target loudness:         {target_dbfs:.1f} dBFS
-  - utterance duration:      {duration_s:.1f} s
-
-Worked examples for "Expected utterance: Help":
-
-  Input: clear "Help" at target loudness
-    -> {{"heard":"help","ack":"Clear and strong.","feedback":"Same energy on the next one.",
-         "next_action":"advance","metrics_observed":{{"matched_prompt":true,"loudness_ok":true,
-         "pitch_range_ok":true,"pace_ok":true,"articulation_ok":true}}}}
-
-  Input: patient says "thank you"
-    -> {{"heard":"thank you","ack":"I heard 'thank you'.","feedback":"The prompt was 'Help' — say that one word for me.",
-         "next_action":"retry","metrics_observed":{{"matched_prompt":false,"loudness_ok":false,
-         "pitch_range_ok":false,"pace_ok":false,"articulation_ok":false}}}}
-
-  Input: patient mumbles "uhh"
-    -> {{"heard":"uhh","ack":"Got a hesitation.","feedback":"Take a breath, then say 'Help' with a strong voice.",
-         "next_action":"retry","metrics_observed":{{"matched_prompt":false,"loudness_ok":false,
-         "pitch_range_ok":false,"pace_ok":false,"articulation_ok":false}}}}
-
-Respond with JSON ONLY. No prose, no markdown fences. Schema:
-{{
-  "heard": "<short transcription of what they actually said, 1-10 words>",
-  "ack": "<short, honest acknowledgement, 3-7 words>",
-  "feedback": "<one specific, actionable cue, 8-22 words>",
-  "next_action": "retry" | "advance" | "rest",
-  "metrics_observed": {{
-    "matched_prompt": true | false,
-    "loudness_ok": true | false,
-    "pitch_range_ok": true | false,
-    "pace_ok": true | false,
-    "articulation_ok": true | false
-  }}
-}}"""
+Field meanings (these long names are the canonical schema; reply with the
+COMPACT keys above to save tokens):
+  h = heard           — what you actually heard, transcribed verbatim.
+                        For silence/cough/breath only, use "(nothing clear)".
+  m = matched_prompt  — 1 if the audio matches the expected utterance,
+                        0 otherwise. Bar is HIGH; when in doubt, m=0.
+                        Single words/names: target word must be recognisable.
+                        Sentences: key content words must be present.
+                        Sustained vowels/glides: a clear vowel attempt counts.
+                        Silence or only filler ("um"/"uh") is ALWAYS m=0.
+  a = ack             — short acknowledgement.
+                        m=0 → neutral, name what you heard, no praise.
+                        m=1 → a brief warm line ("Strong voice.").
+  f = feedback        — one specific, actionable cue.
+                        m=0 → restate the prompt and ask them to try it.
+  n = next_action     — "retry" if m=0 OR a specific element needs work;
+                        "advance" if m=1 and the attempt was solid;
+                        "rest" only if the patient asks for a break.
+                        m=0 ALWAYS implies n="retry"."""
 
 
-def build_prompt(drill: Drill, achieved_dbfs: float, duration_s: float) -> str:
-    """Render the system prompt sent to Gemma for one drill step."""
+COACH_DRILL_TEMPLATE = """Drill {stage_label}: "{prompt}". Exercise: "{exercise_name}".
+Loudness heard {achieved_dbfs:.1f} dBFS, target {target_dbfs:.1f} dBFS, duration {duration_s:.1f}s. Reply with the JSON object."""
+
+
+def build_drill_prompt(
+    drill: Drill, achieved_dbfs: float, duration_s: float
+) -> str:
+    """Per-turn delta. Tiny — designed to NOT trash the KV cache."""
     stage_label = _STAGE_LABEL.get(drill.stage, drill.stage.replace("_", " "))
-    # The note from the JSON program is the human-language instruction for the
-    # phase. For instruction-only phases (warmup, glide), prompt and note are
-    # the same string — fall back to the prompt to avoid an empty cue line.
-    phase_instruction = drill.note.strip() or drill.prompt.strip() or "(no cue)"
-    focus_line = f"Focus: {drill.focus}" if drill.focus else ""
     exercise_name = drill.exercise_name or "speech practice"
-    return COACH_SYSTEM_TEMPLATE.format(
-        exercise_name=exercise_name,
+    return COACH_DRILL_TEMPLATE.format(
         stage_label=stage_label,
-        phase_instruction=phase_instruction,
-        focus_line=focus_line,
         prompt=drill.prompt,
+        exercise_name=exercise_name,
         achieved_dbfs=achieved_dbfs if math.isfinite(achieved_dbfs) else -90.0,
         target_dbfs=drill.target_dbfs,
         duration_s=duration_s,
+    )
+
+
+# Back-compat alias: the old call site builds a single, self-contained
+# system prompt that pastes preamble + delta together. New WS path uses
+# the split helpers directly to win the KV-cache benefit. The CLI keeps
+# calling build_prompt() until #6 wires it through, and tests pin both
+# field names appearing in the rendered text.
+def build_prompt(drill: Drill, achieved_dbfs: float, duration_s: float) -> str:
+    """Render a self-contained prompt (preamble + per-drill delta).
+
+    Kept as a single string so existing CLI/test call sites stay working.
+    The KV-cache win comes from the WS server splitting these and pinning
+    the preamble in cache via cactus_prefill (see web-py/backend).
+    """
+    return (
+        COACH_SESSION_PREAMBLE
+        + "\n\n"
+        + build_drill_prompt(drill, achieved_dbfs, duration_s)
     )
 
 
@@ -228,16 +205,64 @@ def _extract_first_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+# Compact ↔ canonical field-name mapping.
+#
+# We ask Gemma to emit compact keys (h/m/a/f/n) to cut decode tokens
+# ~40 %. The rest of the code (validator, enforcer, WS payload, session
+# log) is built around the canonical long names, so we normalize at the
+# parse boundary. Tolerant of either shape — the CLI test suite still
+# passes raw long-name dicts.
+_COMPACT_TO_CANONICAL = {
+    "h": "heard",
+    "a": "ack",
+    "f": "feedback",
+    "n": "next_action",
+}
+
+
+def _normalize_compact_keys(obj: dict[str, Any]) -> dict[str, Any]:
+    """Map h/m/a/f/n into heard/ack/feedback/next_action/metrics_observed.
+
+    Long-name fields already on the object always win — we never overwrite
+    a real value with a compact alias. `m` becomes
+    `metrics_observed.matched_prompt` so the existing strict-matching
+    enforcer keeps working unchanged.
+    """
+    if not isinstance(obj, dict):
+        return obj
+    for compact, canonical in _COMPACT_TO_CANONICAL.items():
+        if compact in obj and canonical not in obj:
+            obj[canonical] = obj.pop(compact)
+        elif compact in obj:
+            obj.pop(compact, None)
+    if "m" in obj:
+        m_raw = obj.pop("m")
+        try:
+            matched = bool(int(m_raw))
+        except (TypeError, ValueError):
+            matched = bool(m_raw)
+        mo = obj.setdefault("metrics_observed", {})
+        if isinstance(mo, dict):
+            mo.setdefault("matched_prompt", matched)
+        else:
+            obj["metrics_observed"] = {"matched_prompt": matched}
+    return obj
+
+
 def parse_coach_json(raw: str) -> dict[str, Any] | None:
     """Extract the coach JSON from a model reply.
 
-    Handles two wire formats:
-      1. Bare JSON object (what we ask for in the prompt).
-      2. Cactus envelope: {"success": .., "response": "<inner JSON string>"}
+    Handles three wire formats:
+      1. Bare JSON object with canonical long field names.
+      2. Bare JSON object with compact field names (h/m/a/f/n) — the
+         shape the slim COACH_SESSION_PREAMBLE asks the model to emit.
+      3. Cactus envelope: {"success": .., "response": "<inner JSON string>"}
          — what `cactus_complete` writes into its output buffer when the
          caller reads the buffer directly instead of streaming tokens.
 
-    Returns None if neither yields a usable object.
+    Returns None if none yields a usable object. Compact keys are
+    normalised to the canonical names at the boundary so the validator,
+    enforcer, WS payload and session log all keep working unchanged.
     """
     obj = _extract_first_json_object(raw)
     if obj is None:
@@ -247,12 +272,15 @@ def parse_coach_json(raw: str) -> dict[str, Any] | None:
         isinstance(obj, dict)
         and _CACTUS_ENVELOPE_KEYS.issubset(obj)
         and "ack" not in obj
+        and "a" not in obj
         and isinstance(obj.get("response"), str)
     ):
         log.debug("unwrapping Cactus envelope")
         inner = _extract_first_json_object(obj["response"])
         if inner is not None:
-            return inner
+            obj = inner
+    if isinstance(obj, dict):
+        obj = _normalize_compact_keys(obj)
     return obj
 
 
@@ -557,6 +585,17 @@ def coach_mode(  # pragma: no cover - full hardware+model integration; covered b
         "confidence_threshold": 0.0,
     })
 
+    # Reset ONCE at session start so the model has a clean cache. We do
+    # NOT reset per turn — keeping the cache means the COACH_SESSION_PREAMBLE
+    # at messages[0] stays prefilled (chunked prefill prefix-matches the
+    # identical preamble each turn) and only the small per-drill delta +
+    # the new audio frames are encoded. This is the bulk of the latency
+    # win from the cactus-style optimization.
+    try:
+        cactus_module.cactus_reset(model)
+    except Exception as exc:
+        log.debug("session-start cactus_reset raised %s (continuing)", exc)
+
     interrupted = False
 
     def handle_sigint(_signum, _frame):
@@ -573,25 +612,31 @@ def coach_mode(  # pragma: no cover - full hardware+model integration; covered b
     json_failures = 0
     dbfs_seen: list[float] = []
 
+    # cactus-transcribe-style startup line: one row, the way `cactus
+    # transcribe` and `cactus run` introduce themselves. Two flag chips
+    # advertise the optimizations the user is now benefiting from so a
+    # casual reader of the terminal sees they're live without diffing.
     print()
-    print("Voice coach session starting. Speak when prompted. Ctrl+C ends early.")
-    print()
+    print(
+        f"▸ Voice Coach  [{len(drills)} drills]  "
+        "kv-cache: pinned  ·  prompt: slim  ·  tts: streamed  ·  Ctrl+C to stop"
+    )
 
     try:
         i = 0
         retries_for_drill = 0
         while i < len(drills) and not interrupted and not rest_called:
             drill = drills[i]
-            label = f"[{drill.stage} {drill.index + 1}]"
-            print(f"\n{label} say: \"{drill.prompt}\"")
-            if drill.note:
-                print(f"   {drill.note}")
+            # One-line drill banner: stage, position, expected utterance.
+            # Avoids the multi-line "label / note / listening" preamble the
+            # old loop used — single status line per turn keeps the
+            # terminal scrollback as terse as `cactus transcribe`.
+            print(f'\n▸ [{drill.stage} {drill.index + 1}/{len(drills)}] "{drill.prompt}"')
             speak_blocking(f"Please say: {drill.prompt}", voice_name)
 
-            print("listening…")
             pcm, dbfs, duration = capture_one_utterance(np, sd)
             if not pcm:
-                print("   (no speech detected)")
+                print("   ⏺ (no speech detected)")
                 retries_for_drill += 1
                 if retries_for_drill > MAX_RETRIES_PER_DRILL:
                     log.info(
@@ -603,20 +648,17 @@ def coach_mode(  # pragma: no cover - full hardware+model integration; covered b
                 continue
 
             dbfs_seen.append(dbfs)
-            print(
-                f"   captured {duration:.1f}s, avg loudness {dbfs:.1f} dBFS"
-            )
 
-            sys_prompt = build_prompt(drill, dbfs, duration)
+            # KV-cache-friendly layout: preamble lives at index 0
+            # byte-identically every turn, so cactus's prefix match keeps
+            # it pinned in the cache. Only the tiny per-drill delta has
+            # to be re-prefilled — and the audio encoder runs over the
+            # new PCM. NO cactus_reset between turns.
             messages = [
-                {"role": "system", "content": sys_prompt},
+                {"role": "system", "content": COACH_SESSION_PREAMBLE},
+                {"role": "system", "content": build_drill_prompt(drill, dbfs, duration)},
                 {"role": "user", "content": ""},
             ]
-
-            try:
-                cactus_module.cactus_reset(model)
-            except Exception as exc:
-                log.debug("cactus_reset raised %s (continuing)", exc)
 
             log.debug(
                 "drill=%s/%d sending %d audio bytes (%.2fs)",
@@ -681,13 +723,29 @@ def coach_mode(  # pragma: no cover - full hardware+model integration; covered b
             action = valid["next_action"]
             matched = bool(valid.get("metrics_observed", {}).get("matched_prompt", True))
 
-            if heard:
-                tag = "" if matched else "  ✗ mismatch"
-                print(f"   heard: \"{heard}\"{tag}")
+            # Single status line per turn, mirroring the compact look
+            # of `cactus transcribe` output. Wall-clock latency is the
+            # main demo-time signal so we render it inline.
+            mark = "✓" if matched else "✗"
+            heard_chip = f' "{heard}"' if heard else ""
+            print(
+                f"   ⏺ {duration:.1f}s {dbfs:.1f}dBFS  "
+                f"→{heard_chip}  {mark} {action}  ({latency:.1f}s)"
+            )
             spoken = _join_for_speech(ack, feedback)
             if spoken:
-                print(f"   coach: {spoken}")
-                speak_blocking(spoken, voice_name)
+                print(f"   ◂ {spoken}")
+                # Sentence-stream into `say` so playback starts on
+                # sentence 1 immediately, instead of waiting for the
+                # whole reply line to render. Mirrors the WS path
+                # which ships one audio_reply chunk per sentence.
+                done, leftover = split_sentences(spoken)
+                pieces = list(done)
+                leftover = leftover.strip()
+                if leftover:
+                    pieces.append(leftover)
+                for piece in pieces:
+                    speak_blocking(piece, voice_name)
 
             _append_jsonl(session_path, {
                 "ts": datetime.now(timezone.utc).isoformat(),

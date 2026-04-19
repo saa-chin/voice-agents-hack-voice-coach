@@ -27,6 +27,12 @@ Wire format
 Client -> Server:
   { "type": "start_session" }
   { "type": "audio", "pcm_b64": "<base64 int16 PCM>", "sample_rate": 16000 }
+  { "type": "audio_bin", "sample_rate": 16000 }     # followed by ONE binary
+                                                     # frame carrying the raw
+                                                     # int16 LE PCM bytes; same
+                                                     # semantics as "audio" but
+                                                     # ~25% less wire bytes and
+                                                     # zero base64 cost.
   { "type": "command", "action": "skip" | "rest" | "repeat_prompt" }
   { "type": "intent", "utterance": "<free-form text>" }
   { "type": "intent_audio", "pcm_b64": "<base64 int16 PCM>", "sample_rate": 16000 }
@@ -48,7 +54,13 @@ Server -> Client:
        # instead of a static "Coach is thinking…" placeholder.
   { "type": "coach", heard, matched_prompt, ack, feedback,
                      next_action, metrics_observed, latency_s }
-  { "type": "audio_reply", wav_b64, source }    # macOS `say` rendered TTS
+  { "type": "audio_reply", wav_b64, source,    # macOS `say` rendered TTS
+                            chunk_index, is_final }
+       # The coach reply is split into sentences; one frame per sentence
+       # so the browser starts playing chunk 0 while later chunks are
+       # still rendering. `is_final=true` marks the last chunk; clients
+       # use it to release the "speaking" UI. Single-sentence replies
+       # ship one frame with chunk_index=0, is_final=true.
   { "type": "advance" | "retry" | "rest" }
   { "type": "intent_result", action, confidence, utterance, source, latency_ms,
                               transcribe_latency_ms, transcript }
@@ -114,6 +126,21 @@ INTENT_MODEL_ID = _os.environ.get(
 WHISPER_MODEL_ID = _os.environ.get(
     "VOICE_COACH_WHISPER_ID", "openai/whisper-tiny",
 )
+
+# Gating flags — both default OFF so a fresh `./run-web` only loads
+# Gemma 4. The two extra models are nice-to-haves: FunctionGemma 270M
+# routes free-form intents (skip/rest/repeat) and Whisper transcribes
+# voice commands. Both jobs are already covered by the regex
+# HeuristicClassifier in cli/intent.py and by typed-text input, so the
+# default install is one model, ~30 s warmup, ~4 GB RAM instead of
+# three models, ~60 s warmup, ~4.3 GB RAM. Set the flags to "1" to
+# A/B them.
+def _env_truthy(name: str) -> bool:
+    return _os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+ENABLE_INTENT_LLM = _env_truthy("VOICE_COACH_ENABLE_INTENT_LLM")
+ENABLE_WHISPER = _env_truthy("VOICE_COACH_ENABLE_WHISPER")
 
 # macOS `say` voice for server-side TTS. None = system default.
 # `--data-format=LEI16@22050` makes `say` write a real PCM WAV that
@@ -322,13 +349,20 @@ whisper_holder = WhisperHolder()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Kick off all three model loads eagerly so the first WS connection
-    # finds them ready. They run in parallel; the WS handler waits only
-    # on the coach model (Gemma 4). The intent router and Whisper are
-    # best-effort — both degrade cleanly if their load fails.
+    # Eagerly load only the models we actually need for this run. By
+    # default that's just Gemma 4 — the cactus-style optimisation
+    # explicitly drops the two helper models (FunctionGemma router,
+    # Whisper STT) because the regex HeuristicClassifier already
+    # routes intents and typed text already covers voice commands.
+    # The opt-in flags below let users A/B the original three-model
+    # stack without touching code.
     asyncio.create_task(holder.ensure_loaded())
-    asyncio.create_task(intent_holder.ensure_loaded())
-    asyncio.create_task(whisper_holder.ensure_loaded())
+    if ENABLE_INTENT_LLM:
+        log.info("VOICE_COACH_ENABLE_INTENT_LLM=1 — loading FunctionGemma router")
+        asyncio.create_task(intent_holder.ensure_loaded())
+    if ENABLE_WHISPER:
+        log.info("VOICE_COACH_ENABLE_WHISPER=1 — loading Whisper STT")
+        asyncio.create_task(whisper_holder.ensure_loaded())
     yield
 
 
@@ -416,6 +450,29 @@ def _say_to_wav(text: str) -> bytes | None:
 _TTS_TRAILING_PUNCT_RE = None  # populated lazily inside _build_drill_tts
 
 
+def _split_for_streaming_tts(text: str) -> list[str]:
+    """Split a coach reply into sentences for chunked TTS streaming.
+
+    Reuses the same sentence splitter the CLI voice path uses for
+    streaming-token TTS in cli/chat.py, so CLI and web behave the same.
+    Empty input → empty list (caller skips the frame). Anything
+    leftover after the last sentence end (no terminal `.!?`) gets
+    appended as its own chunk so we don't drop trailing words.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+    # cli/_tts.split_sentences lives next to the CLI modules, already on
+    # sys.path — see the import block at the top of this file.
+    import _tts  # noqa: PLC0415  (local import keeps top-of-file lean)
+    done, leftover = _tts.split_sentences(cleaned)
+    leftover = leftover.strip()
+    if leftover:
+        done.append(leftover)
+    # Filter out any empties produced by all-punctuation tails.
+    return [s for s in done if s]
+
+
 def _build_drill_tts(prompt: str, note: str) -> str:
     """Mirror of the frontend's `buildDrillTTS` so the server-side
     `say` rendering speaks the same line the browser would.
@@ -464,6 +521,17 @@ async def ws_coach(ws: WebSocket) -> None:
     dbfs_seen: list[float] = []
     session_path = coach._open_session_log()
     log.info("session log: %s", session_path)
+
+    # Reset ONCE at session start so the model has a clean cache. We
+    # never call cactus_reset between turns — that's the whole KV-cache
+    # win: the COACH_SESSION_PREAMBLE sits at messages[0] byte-identically
+    # every turn, so cactus's prefix-match cache keeps it pinned and
+    # only the small per-drill delta + the new PCM has to be prefilled.
+    if holder.loaded:
+        try:
+            holder.cactus.cactus_reset(holder.model)
+        except Exception as exc:
+            log.debug("session-start cactus_reset raised %s", exc)
 
     async def send(payload: dict) -> None:
         await ws.send_text(json.dumps(payload, default=str))
@@ -674,7 +742,7 @@ async def ws_coach(ws: WebSocket) -> None:
                 # tell the user "didn't catch a command" or stay silent.
                 continue
 
-            if mtype != "audio":
+            if mtype not in ("audio", "audio_bin"):
                 await send({
                     "type": "error",
                     "code": ExitCode.CONFIG_INVALID,
@@ -691,15 +759,30 @@ async def ws_coach(ws: WebSocket) -> None:
                 })
                 continue
 
-            try:
-                pcm = base64.b64decode(msg.get("pcm_b64", ""))
-            except Exception as exc:
-                await send({
-                    "type": "error",
-                    "code": ExitCode.CONFIG_INVALID,
-                    "message": f"bad pcm_b64: {exc}",
-                })
-                continue
+            if mtype == "audio_bin":
+                # Binary PCM path: the JSON envelope above is followed by
+                # ONE binary WS frame carrying the raw int16 LE PCM. ~25 %
+                # smaller on the wire than the base64 form and skips the
+                # btoa/atob CPU on both sides.
+                try:
+                    pcm = await ws.receive_bytes()
+                except Exception as exc:
+                    await send({
+                        "type": "error",
+                        "code": ExitCode.RUNTIME_AUDIO_FAILED,
+                        "message": f"missing binary PCM frame after audio_bin: {exc}",
+                    })
+                    continue
+            else:
+                try:
+                    pcm = base64.b64decode(msg.get("pcm_b64", ""))
+                except Exception as exc:
+                    await send({
+                        "type": "error",
+                        "code": ExitCode.CONFIG_INVALID,
+                        "message": f"bad pcm_b64: {exc}",
+                    })
+                    continue
 
             min_bytes = 2 * coach.MIN_SPEECH_MS * coach.SR // 1000
             if len(pcm) < min_bytes:
@@ -732,15 +815,17 @@ async def ws_coach(ws: WebSocket) -> None:
             })
 
             d = drills_list[drill_idx]
-            sys_prompt = coach.build_prompt(d, dbfs, duration_s)
+            # Two-message system prompt: the long preamble at index 0
+            # is byte-identical every turn (KV-cache pinned); the per-
+            # drill delta at index 1 is ~80 tokens and is the only
+            # thing prefill has to chew on between turns. The audio
+            # encoder also re-runs on the new PCM. NO cactus_reset
+            # between turns — see the session-start reset above.
             messages = [
-                {"role": "system", "content": sys_prompt},
+                {"role": "system", "content": coach.COACH_SESSION_PREAMBLE},
+                {"role": "system", "content": coach.build_drill_prompt(d, dbfs, duration_s)},
                 {"role": "user", "content": ""},
             ]
-            try:
-                holder.cactus.cactus_reset(holder.model)
-            except Exception as exc:
-                log.debug("cactus_reset raised %s", exc)
 
             collector = coach._TokenCollector()
             # Wrap the collector so the first streamed token flips the
@@ -876,27 +961,48 @@ async def ws_coach(ws: WebSocket) -> None:
             })
 
             # Server-side TTS: render the coach's spoken line locally
-            # via macOS `say` and ship the WAV to the client. Keeps
+            # via macOS `say` and ship the WAV(s) to the client. Keeps
             # the entire voice path (in AND out) on this machine — no
             # Chrome-cloud TTS, no platform-dependent voice quality.
-            # If `say` isn't available (Linux/CI), we just skip this
-            # frame and the frontend falls back to speechSynthesis.
-            spoken = ". ".join(p for p in (ack, feedback) if p).strip()
+            # If `say` isn't available (Linux/CI), we skip this frame
+            # and the frontend falls back to speechSynthesis.
+            #
+            # Streaming optimization: instead of rendering the whole
+            # "<ack>. <feedback>." line as ONE WAV (which the browser
+            # has to wait for in full before playing), we split into
+            # sentences and ship each as its own `audio_reply` frame
+            # with a chunk_index + is_final marker. The browser plays
+            # them in order, so audio starts as soon as sentence 1 is
+            # rendered (~80–200 ms) instead of sentence 2's render
+            # finishing too. The last frame always sets is_final=True
+            # so the client knows when to release the "speaking" UI.
+            # Strip trailing punctuation from each piece BEFORE joining
+            # so we don't end up with "Strong voice.. Same energy."
+            # (which the sentence splitter would then treat as one
+            # weird chunk). _join_for_speech does this consistently
+            # with the CLI voice path.
+            spoken = coach._join_for_speech(ack, feedback)
             if spoken and HAS_SAY:
-                # Last visible step before audio actually starts playing.
-                # Gated on HAS_SAY so we don't promise voice synthesis on
-                # a host (Linux/CI) where `say` is missing.
                 await send({
                     "type": "thinking",
                     "step": "synthesizing_voice",
                     "label": "Synthesizing voice with macOS say…",
                 })
-                wav = await asyncio.to_thread(_say_to_wav, spoken)
-                if wav is not None:
+                sentences = _split_for_streaming_tts(spoken)
+                last_idx = len(sentences) - 1
+                for idx, sent in enumerate(sentences):
+                    wav = await asyncio.to_thread(_say_to_wav, sent)
+                    if wav is None:
+                        # If a single sentence fails to render, skip
+                        # it but keep the remaining ones. The client
+                        # gets fewer chunks but still hears something.
+                        continue
                     await send({
                         "type": "audio_reply",
                         "wav_b64": base64.b64encode(wav).decode("ascii"),
                         "source": "macos_say",
+                        "chunk_index": idx,
+                        "is_final": idx == last_idx,
                     })
 
             coach._append_jsonl(session_path, {

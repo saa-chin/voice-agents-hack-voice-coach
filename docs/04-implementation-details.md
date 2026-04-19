@@ -83,31 +83,32 @@ No user table. No account. No PII beyond what the patient types into a free-text
 
 Every coaching turn sends Gemma 4 a small system prompt, the audio buffer, and the DSP-derived numerics. The model is instructed to return strict JSON.
 
+The prompt is split in two so the bulk of it can sit in the Cactus KV cache for the rest of the session and only the tiny per-drill block is re-prefilled per turn (see [§10](#10-cactus-style-optimization-april-2026) for the full rationale and measurements).
+
+**Session preamble** (sent once, ~422 tokens, lives in [`cli/coach.py:COACH_SESSION_PREAMBLE`](../cli/coach.py)):
+
 ```text
 SYSTEM:
-You are a warm, patient speech coach for adults with motor speech disorders
-(Parkinson's, post-stroke dysarthria). The user just attempted to say:
-"<prompt>".
-Their target loudness was <target> dB SPL. They reached <achieved> dB SPL.
-Their pitch range was <range> semitones. Their pace was <sps> syllables/sec.
-You will hear their attempt as audio.
+You are an honest, evidence-based speech coach for adults with motor
+speech disorders. Be brief and direct. Never praise a mismatch.
 
-Listen for: vocal effort, breath support, pitch monotony, trailing off,
-rushed pace, slurred articulation. Be specific but never discouraging.
-
-Respond with JSON only:
-{
-  "ack": "<one short warm acknowledgement, 3–6 words>",
-  "feedback": "<one specific, actionable cue, 8–18 words>",
-  "next_action": "retry" | "advance" | "rest",
-  "metrics_observed": {
-    "loudness_ok": bool,
-    "pitch_range_ok": bool,
-    "pace_ok": bool,
-    "articulation_ok": bool
-  }
-}
+Reply with ONE JSON object and nothing else (compact field names):
+{"h":"<heard, 1-10 words>","m":<0|1>,"a":"<ack, 3-7 words>",
+ "f":"<feedback, 8-22 words>","n":"retry"|"advance"|"rest"}
+… (full key glossary + rules — see source) …
 ```
+
+**Per-drill delta** (sent every turn, ~38 tokens, [`cli/coach.py:COACH_DRILL_TEMPLATE`](../cli/coach.py)):
+
+```text
+SYSTEM:
+Drill <stage>: "<prompt>". Exercise: "<exercise_name>".
+Loudness heard <achieved> dBFS, target <target> dBFS, duration <s>s.
+Reply with the JSON object.
+USER: <audio attached as PCM>
+```
+
+The compact field names cut decode tokens ~2.6×. Internally [`coach.parse_coach_json`](../cli/coach.py) normalises `h/m/a/f/n` back to the canonical `heard / matched_prompt / ack / feedback / next_action` so the rest of the pipeline (validator, [`_enforce_strict_matching`](../cli/coach.py), the WS payload, the session log) is unchanged.
 
 The structured output is what makes the system reliable: the UI advances or retries based on `next_action`, the chart updates from `metrics_observed`, and only `ack + feedback` are spoken.
 
@@ -292,3 +293,154 @@ A reviewer with a build of the app on a physical device can confirm the architec
 4. **Structured output, not vibes.** The session summary screen reflects the same numbers stored in the local SQLite database, viewable via the React Native debugger or any SQLite browser pointed at the app's documents directory.
 
 That is the implementation, end to end.
+
+## 10. Cactus-style optimization (April 2026)
+
+The first end-to-end build felt slow next to `cactus transcribe` / `cactus run`: ~10–12 s per drill turn. The root causes were five concrete things, all fixable without touching the model:
+
+- A **~3 000-token system prompt** sent on every turn (worked examples + JSON schema + per-drill metadata bundled into one giant message).
+- A **`cactus_reset` per turn** that threw away the KV cache, so even a stable system prompt got re-prefilled from scratch.
+- **Three on-device models** (Gemma 4 + Whisper-tiny + FunctionGemma 270M) loaded eagerly even though the regex `HeuristicClassifier` already covered the helper jobs.
+- **Server-side TTS waiting for the full reply** before fork-ing `say`, so the user heard nothing until the JSON was complete.
+- **Base64 PCM over JSON WebSocket frames**, both directions.
+
+The optimization keeps Gemma 4 audio-native (the whole point of the hackathon — DeepMind asked for real-world voice prosody, not a transcribe-then-text fallback). The win comes from using the model the way `cactus run` already does.
+
+### 10.1 Optimized architecture
+
+```mermaid
+flowchart TB
+    subgraph Browser["Browser (React + Astro)"]
+        Mic["Microphone\n16 kHz Int16 PCM"]
+        VAD["Hysteresis VAD\nstart/end of utterance"]
+        WSC["WebSocket client\n(JSON envelope + binary PCM frames)"]
+        SpkQ["Audio playback queue\nplays chunks in order, gapless"]
+    end
+
+    subgraph Server["FastAPI server (single process)"]
+        WSH["/ws/coach handler"]
+        Prefill["KV cache\nholds COACH_SESSION_PREAMBLE\nfor session lifetime"]
+        Heuristic["HeuristicClassifier\nregex intents (skip/rest/repeat)"]
+        Splitter["Sentence splitter\nspoken text into chunks"]
+        Say["macOS say (per-sentence WAV)"]
+    end
+
+    subgraph Cactus["Cactus engine (loaded ONCE)"]
+        Gemma["Gemma 4 E2B audio-native\nINT4 quantised, KV cache pinned"]
+    end
+
+    subgraph Optional["Opt-in extras (env-flagged, default OFF)"]
+        FG["FunctionGemma 270M\nVOICE_COACH_ENABLE_INTENT_LLM=1"]
+        Whisper["Whisper-tiny\nVOICE_COACH_ENABLE_WHISPER=1"]
+    end
+
+    Mic --> VAD --> WSC
+    WSC -->|"audio_bin envelope\n+ binary PCM frame"| WSH
+    WSC -->|"intent (typed)"| Heuristic
+    WSH -->|"per-drill delta only"| Gemma
+    Gemma -->|"compact JSON h/m/a/f/n"| WSH
+    WSH --> Splitter --> Say -->|"audio_reply chunks\n(chunk_index, is_final)"| WSC
+    WSC --> SpkQ
+    Prefill -.session-pinned.- Gemma
+    Heuristic -.fallback.- FG
+    WSH -.optional.- Whisper
+```
+
+Five things are different from the first build:
+
+1. **Two-tier prompt** — the long preamble is at `messages[0]` byte-identically every turn so Cactus's prefix-match cache reuses it. Only the ~38-token drill delta + the new audio is prefilled per turn.
+2. **No `cactus_reset` between turns** — only at session boundaries. The cache lives.
+3. **Heuristic-first intent routing** — FunctionGemma + Whisper are gated behind opt-in env flags. Default install loads exactly one model.
+4. **Sentence-streamed TTS** — the server splits the joined `ack + feedback` into sentences and ships one `audio_reply` per sentence with `chunk_index` + `is_final`. The browser starts playing chunk 0 while chunk 1 is still rendering.
+5. **Binary PCM upload** — the client sends `{type:"audio_bin", sample_rate}` as JSON then the raw `Int16Array` buffer as one binary WS frame. ~25 % less wire bytes, no `btoa`/`atob` CPU.
+
+### 10.2 Per-turn sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant B as Browser
+    participant S as FastAPI / ws_coach
+    participant G as Gemma 4 (Cactus)
+    participant T as macOS say
+
+    Note over S,G: Session start: cactus_reset() ONCE; preamble<br/>lands in KV cache on the first turn
+
+    U->>B: speaks ~5 s phrase
+    B->>B: Hysteresis VAD detects end-of-turn
+    B->>S: JSON {type: "audio_bin", sample_rate: 16000}
+    B->>S: binary frame (~160 KB Int16 PCM)
+    S->>S: dBFS + duration (DSP, no model)
+    S-->>B: {type: "metrics", dbfs, duration_s}
+    S-->>B: {type: "thinking", step: "analyzing_audio"}
+
+    Note over S,G: messages = [preamble (cached), per-drill delta (~38 tok), user]<br/>NO cactus_reset — only the delta + audio is prefilled
+
+    S->>G: cactus_complete(messages, pcm)
+    G-->>S: streamed compact JSON tokens
+    S-->>B: {type: "thinking", step: "generating_response"} (on first token)
+
+    G-->>S: full reply: {"h":"help","m":1,"a":"Strong voice.","f":"Same energy on the next one.","n":"advance"}
+    S->>S: parse_coach_json normalises h/m/a/f/n -> heard/.../next_action
+    S->>S: _enforce_strict_matching (no praise on mismatch)
+    S-->>B: {type: "coach", heard, ack, feedback, next_action, ...}
+
+    Note over S,T: Sentence-streamed TTS:<br/>chunk N+1 renders while chunk N plays
+
+    S->>T: say "Strong voice."
+    T-->>S: WAV bytes (~10 KB)
+    S-->>B: {type: "audio_reply", chunk_index: 0, is_final: false, wav_b64}
+    B->>U: plays sentence 1
+    par
+        S->>T: say "Same energy on the next one."
+    and
+        B->>U: still playing sentence 1
+    end
+    T-->>S: WAV bytes
+    S-->>B: {type: "audio_reply", chunk_index: 1, is_final: true, wav_b64}
+    B->>U: plays sentence 2
+    S-->>B: {type: "advance"} + next drill frame
+```
+
+### 10.3 Measured impact
+
+Numbers below come from `python3.14 -c "import coach; ..."` against the actual prompt builders, not estimates:
+
+| Metric | Before | After | Win |
+|---|---|---|---|
+| System prompt sent per turn | ~3 000 tok (one giant message) | ~38 tok (per-drill delta only; preamble pinned in KV cache) | **~79× smaller per-turn delta** |
+| Coach JSON reply | ~56 tok (long field names + 4 metric flags) | ~21 tok (compact `h/m/a/f/n` schema) | **~2.6× fewer decode tokens** |
+| `cactus_reset` calls per session | one per turn | exactly **one** at session start | KV cache survives |
+| Default models loaded | 3 (Gemma 4 + Whisper-tiny + FunctionGemma 270M) | **1** (Gemma 4 only; helpers env-flagged) | ~250 MB RAM + ~30 s warmup saved |
+| First TTS audio reaches the browser | after full JSON parses | after **first sentence** renders (~80–200 ms) | perceived latency cut to first sentence |
+| PCM upload bytes | base64-in-JSON (~213 KB for 5 s) | binary frame (~160 KB) | **~25 % less wire bytes**, zero base64 CPU |
+
+End-to-end perceived latency target: **~2.5 s** per turn (was ~10–12 s).
+
+### 10.4 Gating + back-compat surface
+
+Nothing was deleted — the previous behaviour is one env var away for A/B work:
+
+| Env var | Default | When on |
+|---|---|---|
+| `VOICE_COACH_ENABLE_INTENT_LLM=1` | off | Loads FunctionGemma 270M; intent classifier prefers it over the regex when both agree |
+| `VOICE_COACH_ENABLE_WHISPER=1` | off | Loads Whisper-tiny; client can use the `intent_audio` WS message to transcribe voice commands on-device |
+| `VOICE_COACH_FUNCGEMMA_ID` | `google/functiongemma-270m-it` | Override the intent model for experiments |
+| `VOICE_COACH_WHISPER_ID` | `openai/whisper-tiny` | Override the Whisper model |
+
+Wire-format back-compat:
+
+- `{type:"audio", pcm_b64, sample_rate}` (legacy base64) is still accepted alongside the new `audio_bin` + binary frame path. Tests still drive the base64 path.
+- `audio_reply` keeps its existing `wav_b64` + `source` fields and adds `chunk_index` + `is_final`. Single-sentence replies ship one frame with `chunk_index: 0, is_final: true`.
+- The compact `h/m/a/f/n` reply schema is normalised to the canonical long names at the parse boundary, so the praise-scrubbing enforcer and the session log keep working unchanged.
+
+### 10.5 Source map
+
+| Concern | File |
+|---|---|
+| Slim preamble + per-drill template + compact-key normaliser | [`cli/coach.py`](../cli/coach.py) |
+| Shared sentence splitter (CLI + WS server) | [`cli/_tts.py`](../cli/_tts.py) |
+| Heuristic intent regex (always available) | [`cli/intent.py`](../cli/intent.py) |
+| WS handler: KV-cache hold + binary PCM + chunked TTS + env gating | [`web-py/backend/app/main.py`](../web-py/backend/app/main.py) |
+| Frontend `sendBinary()` + `audio_bin` envelope | [`web-py/frontend/src/lib/ws.ts`](../web-py/frontend/src/lib/ws.ts), [`web-py/frontend/src/components/CoachApp.tsx`](../web-py/frontend/src/components/CoachApp.tsx) |
