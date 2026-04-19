@@ -1,146 +1,101 @@
 {
   "program_name": "Parkinsons Speech Therapy - LSVT-Aligned Lesson Library",
-  "version": "3.0",
+  "version": "4.0",
   "structure": {
     "default_flow": ["main_task"]
   },
   "_provenance": {
-    "based_on": "LSVT LOUD daily home practice (Aurora Health Care patient handout x26031bc; LSVT Global Homework Helper structure).",
-    "_notes": "Standard daily hierarchy: 6 sustained AHs, 6 high pitch glides, 6 low pitch glides, counting 1-10 in a loud voice, 10 functional phrases, then everyday sentences. Each step is exposed as a discrete drill the coach can grade individually."
+    "based_on": "LSVT LOUD-aligned functional speech drills: city names, people names, action words, short intent sentences, directions, calling out, long words, questions, and daily conversation.",
+    "_notes": "Nine lessons (L1-L9) grouped into three categories (words, names, sentences). Each lesson is exposed as a discrete exercise with a main_task phase; the prompt + variations are flattened into one drill per content item."
   },
   "categories": [
     {
-      "id": "warmup_ah",
-      "name": "Vocal Warm-up — Sustained AH",
-      "goal": "Build vocal-fold strength and breath support with the canonical LSVT LOUD long-AH exercise.",
+      "id": "words",
+      "name": "Words",
+      "goal": "Increase loudness, clarity, and articulation on single-word targets.",
       "exercises": [
         {
-          "id": "L0_ah",
-          "name": "Long AH",
+          "id": "L1",
+          "name": "Speak Strong City Names",
           "lesson": {
-            "goal": "Hold AH as long as possible at LOUD, steady volume — the foundation of LSVT LOUD.",
-            "instructions_for_agent": "Listen for: long duration, steady (no tremor or break), full voice (not breathy or whispered).",
+            "goal": "Increase vocal loudness and clarity using familiar, structured words.",
+            "instructions_for_patient": "Say each city name clearly and loudly. Think about the word before you say it. Use a strong voice, not a soft or fading voice.",
+            "instructions_for_agent": "Encourage the patient to speak louder and with intent. If speech is too soft, prompt: 'Say it with a strong voice.'",
             "what_to_emphasize": [
-              "Take a deep breath first",
-              "Project across the room",
-              "Hold the AH steady",
-              "Don't trail off"
+              "Speak with intent",
+              "Clear consonants",
+              "Full voice (not whispering)",
+              "Finish the word strongly"
             ],
             "common_mistakes": [
-              "Trailing off into a whisper",
-              "Pitch wandering",
-              "Cutting off short"
+              "Trailing off at the end",
+              "Speaking too softly",
+              "Blending syllables"
             ],
-            "success_criteria": "AH is sustained for several seconds at full voice without breathiness or pitch break.",
-            "exercise_type": "sustained_vowel",
+            "success_criteria": "Patient says each word clearly, loudly, and fully.",
+            "exercise_type": "repeat",
             "difficulty": "easy"
           },
           "phases": {
             "main_task": {
-              "content": ["AH"],
-              "instructions": "Take a deep breath. Say AH in a loud voice and hold it as long as you can. Try to project your voice across the room.",
-              "focus": "Loud, steady, full voice; no trail-off.",
-              "repetitions": 6,
-              "duration_sec": 6
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": "pitch_glides",
-      "name": "Pitch Glides",
-      "goal": "Expand pitch range while keeping the loud voice.",
-      "exercises": [
-        {
-          "id": "L0_high",
-          "name": "Going Up — High AH",
-          "lesson": {
-            "goal": "Glide AH from speaking pitch to as high as possible while staying LOUD.",
-            "instructions_for_agent": "Reward an audible upward sweep that stays voiced and loud throughout.",
-            "what_to_emphasize": [
-              "Start LOUD",
-              "Glide up smoothly",
-              "Keep the voice strong at the top"
-            ],
-            "common_mistakes": [
-              "Voice cuts out at the top",
-              "Going up but losing volume"
-            ],
-            "success_criteria": "Continuous upward pitch glide on AH with the voice loud at start AND top.",
-            "exercise_type": "pitch_glide",
-            "difficulty": "easy"
-          },
-          "phases": {
-            "main_task": {
-              "content": ["AH (going up)"],
-              "instructions": "Start with a loud AH, then glide your voice as high as you can. Hold the high note for five seconds.",
-              "focus": "Smooth glide; loud at top; no cracking.",
-              "repetitions": 6,
-              "duration_sec": 5
+              "content": ["New York", "London", "Paris", "Tokyo", "Sydney"],
+              "instructions": "Say each city name clearly and loudly. Think about the word before you say it. Use a strong voice, not a soft or fading voice.",
+              "focus": "Loud, intentful delivery; clear consonants; finish strong.",
+              "repetitions": 1
             }
           }
         },
         {
-          "id": "L0_low",
-          "name": "Going Down — Low AH",
+          "id": "L3",
+          "name": "Everyday Action Words",
           "lesson": {
-            "goal": "Glide AH from speaking pitch to as low as possible while staying LOUD.",
-            "instructions_for_agent": "Reward an audible downward sweep that stays voiced and loud at the bottom.",
+            "goal": "Strengthen clarity in commonly used words.",
+            "instructions_for_patient": "Say each word clearly and with purpose.",
+            "instructions_for_agent": "Reinforce clarity and pacing.",
             "what_to_emphasize": [
-              "Start LOUD",
-              "Glide down smoothly",
-              "Keep the voice strong at the bottom"
+              "Intent before speaking",
+              "Clear endings"
             ],
             "common_mistakes": [
-              "Voice cuts to a whisper at the bottom"
+              "Rushing",
+              "Dropping final sounds"
             ],
-            "success_criteria": "Continuous downward pitch glide on AH with voice loud at start AND bottom.",
-            "exercise_type": "pitch_glide",
+            "success_criteria": "Words are distinct and easy to understand.",
+            "exercise_type": "repeat",
             "difficulty": "easy"
           },
           "phases": {
             "main_task": {
-              "content": ["AH (going down)"],
-              "instructions": "Start with a loud AH, then glide your voice as low as you can. Hold the low note for five seconds.",
-              "focus": "Smooth glide; loud at bottom; no whisper.",
-              "repetitions": 6,
-              "duration_sec": 5
+              "content": ["Help", "Stop", "Go", "Wait", "Come"],
+              "instructions": "Say each word clearly and with purpose.",
+              "focus": "Intent before speaking; clear endings; no dropped final sounds.",
+              "repetitions": 1
             }
           }
-        }
-      ]
-    },
-    {
-      "id": "counting",
-      "name": "Counting in a Loud Voice",
-      "goal": "Sustain LOUD voice across a sequence — bridge from sustained AH to connected speech.",
-      "exercises": [
+        },
         {
-          "id": "L0_count",
-          "name": "Count 1 to 10",
+          "id": "L7",
+          "name": "Long Words with Clarity",
           "lesson": {
-            "goal": "Count 1-10 in a strong, projected voice; pause for breath as needed without dropping volume.",
-            "instructions_for_agent": "Listen for all ten digits in order, full voice on each, with breath pauses that don't drop loudness.",
+            "goal": "Improve articulation across syllables.",
+            "instructions_for_patient": "Break the word in your mind, then say it clearly.",
+            "instructions_for_agent": "Reinforce deliberate, syllable-by-syllable pacing so no sounds are skipped.",
             "what_to_emphasize": [
-              "Full voice on every number",
-              "Steady pace",
-              "Breath without volume drop"
+              "Each syllable",
+              "Slow pacing"
             ],
             "common_mistakes": [
-              "Trailing off after 6 or 7",
-              "Skipping numbers",
-              "Whispering the second half"
+              "Skipping syllables"
             ],
-            "success_criteria": "All ten numbers spoken loudly and clearly in order.",
-            "exercise_type": "counting",
-            "difficulty": "easy"
+            "success_criteria": "All syllables are clearly spoken.",
+            "exercise_type": "repeat",
+            "difficulty": "medium"
           },
           "phases": {
             "main_task": {
-              "content": ["1 2 3 4 5 6 7 8 9 10"],
-              "instructions": "Count from 1 to 10 in a loud voice. Pause for a breath if you need to, but keep your voice strong all the way to ten.",
-              "focus": "Loud on every number; no trailing off.",
+              "content": ["California", "Mississippi", "Philadelphia"],
+              "instructions": "Break the word in your mind, then say it clearly. Slow down and hit every syllable.",
+              "focus": "Every syllable; slow, deliberate pacing.",
               "repetitions": 1
             }
           }
@@ -148,75 +103,64 @@
       ]
     },
     {
-      "id": "functional_phrases",
-      "name": "Functional Phrases (LSVT LOUD)",
-      "goal": "Practise the canonical 10 LSVT LOUD functional phrases — the ones you actually say every day.",
+      "id": "names",
+      "name": "Names",
+      "goal": "Improve vocal energy, emotional engagement, and projection using meaningful names.",
       "exercises": [
         {
-          "id": "L_func_basics",
-          "name": "Daily Greetings & Replies",
+          "id": "L2",
+          "name": "Say Names Clearly",
           "lesson": {
-            "goal": "Use a LOUD voice for the highest-frequency social phrases.",
-            "instructions_for_agent": "Each phrase is short — listen for full voice through the entire phrase, including the final word.",
+            "goal": "Improve articulation and emotional engagement using meaningful names.",
+            "instructions_for_patient": "Say each name like you are calling someone across the room. Use energy and intent.",
+            "instructions_for_agent": "Prompt for stronger voice if flat. Encourage emotional tone.",
             "what_to_emphasize": [
-              "Loud start AND loud end",
-              "Don't drop the last word",
-              "Project as if calling across a room"
+              "Energy in voice",
+              "Clear pronunciation",
+              "Calling tone"
             ],
             "common_mistakes": [
-              "Loud start, soft end",
-              "Mumbling the last word",
-              "Saying the phrase quietly because it's familiar"
+              "Flat tone",
+              "Mumbling",
+              "Low volume"
             ],
-            "success_criteria": "Phrase is fully audible and clear from first word to last.",
-            "exercise_type": "functional_phrase",
+            "success_criteria": "Names are spoken clearly and loudly with energy.",
+            "exercise_type": "repeat",
             "difficulty": "easy"
           },
           "phases": {
             "main_task": {
-              "content": [
-                "Good morning.",
-                "How are you?",
-                "I'm fine, thanks.",
-                "Thank you.",
-                "I love you."
-              ],
-              "instructions": "Say each phrase in a loud, expressive voice. Project across the room. Finish the last word as strongly as the first.",
-              "focus": "Loud start AND loud end; project; do not trail off.",
+              "content": ["Michael", "Sarah", "David", "Emily", "John"],
+              "instructions": "Say each name like you are calling someone across the room. Use energy and intent.",
+              "focus": "Energy, clear pronunciation, calling tone.",
               "repetitions": 1
             }
           }
         },
         {
-          "id": "L_func_action",
-          "name": "Asking, Calling, Telling (LSVT canonical)",
+          "id": "L6",
+          "name": "Call Out Names",
           "lesson": {
-            "goal": "Project intent on action-oriented phrases that occur in real daily life.",
-            "instructions_for_agent": "These are LSVT LOUD canonical functional phrases. Listen for full-voice projection on every word.",
+            "goal": "Increase vocal strength through emotional intent.",
+            "instructions_for_patient": "Say the name like you are calling someone.",
+            "instructions_for_agent": "Encourage louder projection.",
             "what_to_emphasize": [
-              "Strong consonants",
-              "Project the meaning",
-              "Loud through the whole phrase"
+              "Projection",
+              "Emotion",
+              "Intent"
             ],
             "common_mistakes": [
-              "Asking softly because asking feels polite",
-              "Voice fading on the second half"
+              "Monotone voice"
             ],
-            "success_criteria": "Each phrase is delivered with intent and full audibility throughout.",
-            "exercise_type": "functional_phrase",
-            "difficulty": "easy"
+            "success_criteria": "Voice carries energy and intent.",
+            "exercise_type": "repeat",
+            "difficulty": "medium"
           },
           "phases": {
             "main_task": {
-              "content": [
-                "I need help.",
-                "Please sit down.",
-                "Pass the food, please.",
-                "Answer the phone.",
-                "Shut the door."
-              ],
-              "instructions": "Say each phrase in a loud, expressive voice — like you really mean it.",
-              "focus": "Project intent; loud through to the final word.",
+              "content": ["Anna!", "Tom!", "Lisa!", "Mark!"],
+              "instructions": "Say the name like you are calling someone across the room.",
+              "focus": "Projection; emotional intent; not monotone.",
               "repetitions": 1
             }
           }
@@ -225,71 +169,116 @@
     },
     {
       "id": "sentences",
-      "name": "Everyday Sentences",
-      "goal": "Carry the LOUD voice into longer breath groups with real-world content.",
+      "name": "Sentences",
+      "goal": "Carry a loud, clear voice across connected speech in real-world phrases.",
       "exercises": [
         {
-          "id": "L_sent_breath",
-          "name": "One Breath, One Sentence",
+          "id": "L4",
+          "name": "Short Intent Sentences",
           "lesson": {
-            "goal": "Plan the breath, then deliver the whole sentence in a loud voice without breaking volume.",
-            "instructions_for_agent": "Reward sentences finished at full volume. Penalise drop-off after the second-to-last word.",
+            "goal": "Develop clarity and breath support across short phrases.",
+            "instructions_for_patient": "Think, then speak the full sentence clearly.",
+            "instructions_for_agent": "Ensure full sentence completion.",
             "what_to_emphasize": [
-              "Inhale before starting",
-              "Loud through the period",
-              "No fading"
+              "Complete sentence",
+              "Strong start and end",
+              "No trailing off"
             ],
             "common_mistakes": [
-              "Running out of breath halfway",
-              "Dropping the last word",
-              "Speaking too quickly to stay loud"
+              "Stopping midway",
+              "Weak ending"
             ],
-            "success_criteria": "Whole sentence is loud and intelligible from start to end.",
-            "exercise_type": "sentence",
+            "success_criteria": "Sentence is spoken fully and clearly.",
+            "exercise_type": "repeat",
             "difficulty": "medium"
           },
           "phases": {
             "main_task": {
-              "content": [
-                "I would love a cup of coffee.",
-                "It is a beautiful day.",
-                "It is good to see you.",
-                "Where is the remote control?"
-              ],
-              "instructions": "Take a breath, then say the whole sentence in a loud voice — finish as strongly as you started.",
-              "focus": "Loud through the period; finish strong.",
+              "content": ["I am ready.", "I feel good.", "I need help.", "I am here."],
+              "instructions": "Think, then speak the full sentence clearly. Finish as strongly as you started.",
+              "focus": "Complete sentence; strong start and end; no trailing off.",
               "repetitions": 1
             }
           }
         },
         {
-          "id": "L_sent_question",
-          "name": "Ask Questions Clearly",
+          "id": "L5",
+          "name": "Give Clear Directions",
           "lesson": {
-            "goal": "Carry intonation and full voice through to the question mark.",
-            "instructions_for_agent": "Listen for an audibly rising end on questions and full volume on every word.",
+            "goal": "Improve functional communication clarity.",
+            "instructions_for_patient": "Speak clearly as if giving instructions.",
+            "instructions_for_agent": "Encourage slower pacing.",
             "what_to_emphasize": [
-              "Rise at the end",
-              "Loud on the final word",
-              "Clear consonants"
+              "Clarity",
+              "Deliberate pacing"
             ],
             "common_mistakes": [
-              "Flat tone",
-              "Dropping volume on the last word"
+              "Rushing",
+              "Blending words"
             ],
-            "success_criteria": "Question is clearly a question and is loud through the final word.",
-            "exercise_type": "sentence",
+            "success_criteria": "Sentence is understandable on first attempt.",
+            "exercise_type": "repeat",
             "difficulty": "medium"
           },
           "phases": {
             "main_task": {
-              "content": [
-                "How are you today?",
-                "Where are you going?",
-                "Would you like to go out to eat?"
-              ],
+              "content": ["Turn left here.", "Go straight ahead.", "Stop at the door."],
+              "instructions": "Speak clearly, as if giving directions to someone who needs to follow them.",
+              "focus": "Clarity; deliberate pacing; do not blend words.",
+              "repetitions": 1
+            }
+          }
+        },
+        {
+          "id": "L8",
+          "name": "Ask Questions Clearly",
+          "lesson": {
+            "goal": "Improve intonation and expressiveness.",
+            "instructions_for_patient": "Raise your tone at the end like a question.",
+            "instructions_for_agent": "Listen for an audibly rising end on questions and clear phrasing throughout.",
+            "what_to_emphasize": [
+              "Pitch variation",
+              "Clear phrasing"
+            ],
+            "common_mistakes": [
+              "Flat tone"
+            ],
+            "success_criteria": "Question sounds natural and clear.",
+            "exercise_type": "repeat",
+            "difficulty": "medium"
+          },
+          "phases": {
+            "main_task": {
+              "content": ["Are you ready?", "Where are you?", "Can you help me?"],
               "instructions": "Ask each question in a loud voice. Let your pitch rise at the end.",
-              "focus": "Pitch rise at end; full voice on the final word.",
+              "focus": "Pitch rise at end; clear phrasing; not flat.",
+              "repetitions": 1
+            }
+          }
+        },
+        {
+          "id": "L9",
+          "name": "Daily Conversation",
+          "lesson": {
+            "goal": "Prepare for real-world speaking.",
+            "instructions_for_patient": "Speak naturally but clearly.",
+            "instructions_for_agent": "Keep speech natural in pacing but fully intelligible; discourage rushing.",
+            "what_to_emphasize": [
+              "Natural pacing",
+              "Clarity"
+            ],
+            "common_mistakes": [
+              "Speaking too fast"
+            ],
+            "success_criteria": "Speech is understandable and natural.",
+            "exercise_type": "repeat",
+            "difficulty": "medium"
+          },
+          "phases": {
+            "main_task": {
+              "content": ["How was your day?", "I had a good day.", "Let's go outside."],
+              "instructions": "Speak naturally but clearly — like a real conversation.",
+              "focus": "Natural pacing; clarity; don't rush.",
               "repetitions": 1
             }
           }
