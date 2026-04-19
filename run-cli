@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# run-cli — launch the on-device Cactus chat REPL.
+# run-cli — launch the on-device Cactus chat REPL (text or continuous voice).
 #
 # Usage:
-#   ./run-cli                      # run with default (already-downloaded) model
-#   ./run-cli --model <hf/id>      # use a different model (downloads if missing)
-#   ./run-cli --system "..."       # override system prompt
-#   ./run-cli -- --temperature 0.2 # pass extra args straight to chat.py
-#   ./run-cli --list-models        # list locally downloaded model weights
-#   ./run-cli -h | --help          # show this help
+#   ./run-cli                          # interactive: choose text or voice
+#   ./run-cli --text                   # text chat (Gemma 4)
+#   ./run-cli --voice                  # continuous voice chat — Gemma 4
+#                                      # listens to your audio NATIVELY
+#                                      # (no Whisper); replies via macOS `say`
+#   ./run-cli --model <hf/id>          # override chat model
+#   ./run-cli --voice-name Samantha    # macOS `say` voice
+#   ./run-cli --system "..."           # override system prompt
+#   ./run-cli --list-models            # list locally downloaded weights
+#   ./run-cli -- --temperature 0.2     # pass extra args straight to chat.py
+#   ./run-cli -h | --help              # this help
 #
-# Verifies tools, then execs cli/chat.py via python3.14.
+# Does everything end-to-end: tool checks, model download, Python deps for
+# voice mode, then execs cli/chat.py via python3.14.
 
 set -u
 set -o pipefail
@@ -35,7 +41,7 @@ die() {
   exit 1
 }
 
-show_help() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+show_help() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI_DIR="$SCRIPT_DIR/cli"
@@ -46,19 +52,24 @@ WEIGHTS_DIR="/opt/homebrew/opt/cactus/libexec/weights"
   "Run this script from the repo root."
 
 LIST_MODELS=0
+MODE=""
+MODEL="google/gemma-4-e2b-it"
 PASSTHRU=()
-MODEL=""
-SAW_MODEL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)        show_help ;;
     --list-models)    LIST_MODELS=1; shift ;;
+    --text)           MODE="text"; shift ;;
+    --voice)          MODE="voice"; shift ;;
+    --mode)
+      [[ $# -ge 2 ]] || die "--mode requires text or voice"
+      MODE="$2"; shift 2 ;;
+    --mode=*)         MODE="${1#*=}"; shift ;;
     --model)
-      [[ $# -ge 2 ]] || die "--model requires a value (e.g. google/gemma-4-e2b-it)"
-      MODEL="$2"; SAW_MODEL=1; PASSTHRU+=( "--model" "$2" ); shift 2 ;;
-    --model=*)
-      MODEL="${1#*=}"; SAW_MODEL=1; PASSTHRU+=( "--model=${MODEL}" ); shift ;;
+      [[ $# -ge 2 ]] || die "--model requires a value"
+      MODEL="$2"; shift 2 ;;
+    --model=*)        MODEL="${1#*=}"; shift ;;
     --)               shift; PASSTHRU+=( "$@" ); break ;;
     *)                PASSTHRU+=( "$1" ); shift ;;
   esac
@@ -92,6 +103,14 @@ CACTUS_DYLIB="/opt/homebrew/opt/cactus/lib/libcactus.dylib"
   "Reinstall: brew reinstall cactus-compute/cactus/cactus"
 ok "libcactus.dylib → $CACTUS_DYLIB"
 
+# Symlink dylib so cactus.py can find it
+EXPECTED_LIB="/opt/homebrew/lib/cactus/build/libcactus.dylib"
+if [[ ! -e "$EXPECTED_LIB" ]]; then
+  mkdir -p "$(dirname "$EXPECTED_LIB")"
+  ln -sf "$CACTUS_DYLIB" "$EXPECTED_LIB"
+  ok "Symlinked $EXPECTED_LIB → $CACTUS_DYLIB"
+fi
+
 step "Available local models"
 if [[ -d "$WEIGHTS_DIR" ]]; then
   LOCAL_MODELS="$(ls -1 "$WEIGHTS_DIR" 2>/dev/null || true)"
@@ -99,7 +118,6 @@ if [[ -d "$WEIGHTS_DIR" ]]; then
     printf '%s\n' "$LOCAL_MODELS" | sed 's/^/      • /'
   else
     warn "No models downloaded yet."
-    info "Download one: cactus download google/gemma-4-e2b-it"
   fi
 else
   warn "Weights dir not found: $WEIGHTS_DIR"
@@ -109,23 +127,93 @@ if [[ "$LIST_MODELS" -eq 1 ]]; then
   exit 0
 fi
 
-if [[ "$SAW_MODEL" -eq 0 ]]; then
-  if [[ -d "$WEIGHTS_DIR/gemma-4-e2b-it" ]]; then
-    MODEL="google/gemma-4-e2b-it"
-    PASSTHRU=( "--model" "$MODEL" ${PASSTHRU[@]+"${PASSTHRU[@]}"} )
-    info "Using already-downloaded model: $MODEL"
+# --- pick mode interactively if not given ----------------------------------
+if [[ -z "$MODE" ]]; then
+  if [[ -t 0 ]]; then
+    step "Pick a mode"
+    info "  1) text chat"
+    info "  2) voice chat (continuous, mic + TTS)"
+    while true; do
+      printf "    choice [1/2]: "
+      read -r choice || { MODE="text"; break; }
+      case "$choice" in
+        1|t|text)  MODE="text"; break ;;
+        2|v|voice) MODE="voice"; break ;;
+        *) info "enter 1 or 2" ;;
+      esac
+    done
   else
-    FIRST="$(ls -1 "$WEIGHTS_DIR" 2>/dev/null | head -n1 || true)"
-    if [[ -n "$FIRST" ]]; then
-      MODEL="local/$FIRST"
-      PASSTHRU=( "--model" "$MODEL" ${PASSTHRU[@]+"${PASSTHRU[@]}"} )
-      info "Using already-downloaded model: $FIRST"
-    else
-      warn "No local model — chat.py will download the default (~4 GB)."
+    MODE="text"
+  fi
+fi
+[[ "$MODE" == "text" || "$MODE" == "voice" ]] \
+  || die "Invalid mode: '$MODE' (expected text or voice)"
+ok "Mode: $MODE"
+
+# --- ensure chat model downloaded ------------------------------------------
+ensure_model() {
+  local mid="$1"
+  local label="$2"
+  local dirname
+  dirname="$(basename "$mid")"
+  if [[ -d "$WEIGHTS_DIR/$dirname" ]] && [[ -n "$(ls -A "$WEIGHTS_DIR/$dirname" 2>/dev/null || true)" ]]; then
+    ok "$label model present: $dirname"
+    return 0
+  fi
+  step "Downloading $label model: $mid"
+  info "First-time download — may take a while."
+  if ! cactus download "$mid"; then
+    die "cactus download $mid failed." \
+        "Check internet, disk space, or HF auth (if gated)."
+  fi
+  ok "Downloaded: $dirname"
+}
+
+ensure_model "$MODEL" "chat"
+
+if [[ "$MODE" == "voice" ]]; then
+  step "Ensuring Python deps for voice (sounddevice, numpy, cffi)"
+  if python3.14 -c "import sounddevice, numpy, _cffi_backend" >/dev/null 2>&1; then
+    ok "sounddevice + numpy + cffi backend already installed"
+  else
+    info "Installing into python3.14 site-packages…"
+    python3.14 -m pip install --quiet --break-system-packages sounddevice numpy >/dev/null 2>&1 || true
+
+    # cffi via brew may ship without a usable C extension on python 3.14.
+    # If _cffi_backend is missing, force a source build.
+    if ! python3.14 -c "import _cffi_backend" >/dev/null 2>&1; then
+      info "Rebuilding cffi from source (brew shim missing _cffi_backend)…"
+      SITE="/opt/homebrew/lib/python3.14/site-packages"
+      rm -rf "$SITE/cffi" "$SITE/cffi-"*.dist-info "$SITE/pycparser" "$SITE/pycparser-"*.dist-info 2>/dev/null || true
+      python3.14 -m pip install --quiet --break-system-packages --no-binary cffi cffi >/dev/null 2>&1 \
+        || die "Failed to build cffi from source." \
+               "Try manually: python3.14 -m pip install --break-system-packages --no-binary cffi cffi"
     fi
+
+    if ! python3.14 -c "import sounddevice, numpy, _cffi_backend" >/dev/null 2>&1; then
+      die "Voice deps still not importable after install." \
+          "Manual fix:" \
+          "  python3.14 -m pip install --break-system-packages sounddevice numpy" \
+          "  python3.14 -m pip install --break-system-packages --no-binary cffi cffi" \
+          "If sounddevice fails: brew install portaudio"
+    fi
+    ok "Installed sounddevice + numpy + cffi"
+  fi
+
+  if ! command -v say >/dev/null 2>&1; then
+    warn "macOS 'say' not found — TTS will be silent."
   fi
 fi
 
-step "Launching chat REPL"
-info "Commands inside REPL: /reset, /quit"
-exec python3.14 "$CHAT_PY" ${PASSTHRU[@]+"${PASSTHRU[@]}"}
+# --- launch ---------------------------------------------------------------
+step "Launching $MODE chat"
+if [[ "$MODE" == "voice" ]]; then
+  info "Speak naturally. ~900ms pause to send. Ctrl+C exits."
+else
+  info "Commands inside REPL: /reset, /quit"
+fi
+
+ARGS=( "--mode" "$MODE" "--model" "$MODEL" )
+ARGS+=( ${PASSTHRU[@]+"${PASSTHRU[@]}"} )
+
+exec python3.14 "$CHAT_PY" "${ARGS[@]}"
