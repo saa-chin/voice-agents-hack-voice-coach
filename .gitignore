@@ -1,0 +1,11 @@
+# Internal team-only notes — never commit to the public repo
+internal/
+
+# Editor / tooling
+.cursor/
+.vscode/
+.idea/
+.DS_Store
+
+# OS
+Thumbs.db

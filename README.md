@@ -1,5 +1,14 @@
 <img src="assets/banner.png" alt="Logo" style="border-radius: 30px; width: 60%;">
 
+## Documentation
+
+| # | Document |
+| --- | --- |
+| 1 | [The Problem](./docs/01-the-problem.md) |
+| 2 | [The Solution](./docs/02-the-solution.md) |
+| 3 | [The Architecture](./docs/03-the-architecture.md) |
+| 4 | [Implementation Details](./docs/04-implementation-details.md) |
+
 ## Context
 - Cactus (YC S25) is a low-latency engine for mobile devices & wearables. 
 - Cactus runs locally on edge devices with hybrid routing of complex tasks to cloud models like Gemini.
