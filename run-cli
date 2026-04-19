@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# run-cli — launch the on-device Cactus chat REPL (text or continuous voice).
+# run-cli — launch the on-device Cactus chat REPL (text, voice, or coach).
 #
 # Usage:
-#   ./run-cli                          # interactive: choose text or voice
+#   ./run-cli                          # interactive: choose text, voice, or coach
 #   ./run-cli --text                   # text chat (Gemma 4)
 #   ./run-cli --voice                  # continuous voice chat — Gemma 4
 #                                      # listens to your audio NATIVELY
 #                                      # (no Whisper); replies via macOS `say`
+#   ./run-cli --coach                  # drill-driven speech-coach session
+#                                      # (structured JSON contract + session log)
 #   ./run-cli --model <hf/id>          # override chat model
 #   ./run-cli --voice-name Samantha    # macOS `say` voice
-#   ./run-cli --system "..."           # override system prompt
+#   ./run-cli --system "..."           # override system prompt (text/voice only)
+#   ./run-cli --log-level DEBUG        # bump CLI log verbosity
 #   ./run-cli --list-models            # list locally downloaded weights
 #   ./run-cli -- --temperature 0.2     # pass extra args straight to chat.py
 #   ./run-cli -h | --help              # this help
@@ -41,7 +44,7 @@ die() {
   exit 1
 }
 
-show_help() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+show_help() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI_DIR="$SCRIPT_DIR/cli"
@@ -62,8 +65,9 @@ while [[ $# -gt 0 ]]; do
     --list-models)    LIST_MODELS=1; shift ;;
     --text)           MODE="text"; shift ;;
     --voice)          MODE="voice"; shift ;;
+    --coach)          MODE="coach"; shift ;;
     --mode)
-      [[ $# -ge 2 ]] || die "--mode requires text or voice"
+      [[ $# -ge 2 ]] || die "--mode requires text, voice, or coach"
       MODE="$2"; shift 2 ;;
     --mode=*)         MODE="${1#*=}"; shift ;;
     --model)
@@ -133,21 +137,23 @@ if [[ -z "$MODE" ]]; then
     step "Pick a mode"
     info "  1) text chat"
     info "  2) voice chat (continuous, mic + TTS)"
+    info "  3) coach (drill-driven speech practice)"
     while true; do
-      printf "    choice [1/2]: "
+      printf "    choice [1/2/3]: "
       read -r choice || { MODE="text"; break; }
       case "$choice" in
         1|t|text)  MODE="text"; break ;;
         2|v|voice) MODE="voice"; break ;;
-        *) info "enter 1 or 2" ;;
+        3|c|coach) MODE="coach"; break ;;
+        *) info "enter 1, 2, or 3" ;;
       esac
     done
   else
     MODE="text"
   fi
 fi
-[[ "$MODE" == "text" || "$MODE" == "voice" ]] \
-  || die "Invalid mode: '$MODE' (expected text or voice)"
+[[ "$MODE" == "text" || "$MODE" == "voice" || "$MODE" == "coach" ]] \
+  || die "Invalid mode: '$MODE' (expected text, voice, or coach)"
 ok "Mode: $MODE"
 
 # --- ensure chat model downloaded ------------------------------------------
@@ -171,8 +177,8 @@ ensure_model() {
 
 ensure_model "$MODEL" "chat"
 
-if [[ "$MODE" == "voice" ]]; then
-  step "Ensuring Python deps for voice (sounddevice, numpy, cffi)"
+if [[ "$MODE" == "voice" || "$MODE" == "coach" ]]; then
+  step "Ensuring Python deps for $MODE (sounddevice, numpy, cffi)"
   if python3.14 -c "import sounddevice, numpy, _cffi_backend" >/dev/null 2>&1; then
     ok "sounddevice + numpy + cffi backend already installed"
   else
@@ -207,11 +213,11 @@ fi
 
 # --- launch ---------------------------------------------------------------
 step "Launching $MODE chat"
-if [[ "$MODE" == "voice" ]]; then
-  info "Speak naturally. ~900ms pause to send. Ctrl+C exits."
-else
-  info "Commands inside REPL: /reset, /quit"
-fi
+case "$MODE" in
+  voice) info "Speak naturally. ~800ms pause to send. Ctrl+C exits." ;;
+  coach) info "Follow the prompts. The coach speaks, you respond. Ctrl+C ends early." ;;
+  *)     info "Commands inside REPL: /reset, /quit" ;;
+esac
 
 ARGS=( "--mode" "$MODE" "--model" "$MODEL" )
 ARGS+=( ${PASSTHRU[@]+"${PASSTHRU[@]}"} )

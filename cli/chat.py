@@ -1,19 +1,24 @@
 #!/usr/bin/env python3.14
 """On-device chat REPL backed by Cactus.
 
-Two modes:
+Three modes:
   text  — typed REPL into Gemma 4 (text only).
   voice — continuous mic capture; the captured PCM is sent **directly** to
           Gemma 4 (audio-native, no Whisper). Gemma 4 reasons over the raw
           audio (tone, pace, hesitation) and replies with text that is then
           spoken via macOS `say`.
+  coach — drill-driven speech practice. Same audio path as voice, but the
+          model is instructed to reply in a structured JSON contract
+          ({ack, feedback, next_action, metrics_observed}). See coach.py.
+
+Exit codes are defined in `_exit.ExitCode`. Logs go to stderr via the
+`voicecoach.*` logger family; tweak with --log-level or VOICE_COACH_LOG_LEVEL.
 """
 from __future__ import annotations
 
 import argparse
 import ctypes
 import json
-import os
 import shutil
 import signal
 import subprocess
@@ -21,6 +26,11 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+import _log
+from _exit import ExitCode, die
+
+log = _log.get("chat")
 
 
 BREW_PREFIX = Path("/opt/homebrew")
@@ -33,19 +43,49 @@ def ensure_lib_discoverable() -> None:
     if EXPECTED_LIB.exists() or EXPECTED_LIB.is_symlink():
         return
     if not CACTUS_LIB.exists():
-        sys.exit(f"libcactus.dylib not found at {CACTUS_LIB}. Install: brew install cactus-compute/cactus/cactus")
-    EXPECTED_LIB.parent.mkdir(parents=True, exist_ok=True)
-    EXPECTED_LIB.symlink_to(CACTUS_LIB)
+        die(
+            ExitCode.ENV_MISSING_LIB,
+            f"libcactus.dylib not found at {CACTUS_LIB}",
+            "Install: brew install cactus-compute/cactus/cactus",
+        )
+    try:
+        EXPECTED_LIB.parent.mkdir(parents=True, exist_ok=True)
+        EXPECTED_LIB.symlink_to(CACTUS_LIB)
+    except OSError as exc:
+        die(
+            ExitCode.SETUP_LIB_LINK_FAILED,
+            f"Failed to symlink {EXPECTED_LIB} -> {CACTUS_LIB}: {exc}",
+            "Try manually: "
+            f"sudo ln -sf {CACTUS_LIB} {EXPECTED_LIB}",
+        )
+    log.info("symlinked %s -> %s", EXPECTED_LIB, CACTUS_LIB)
 
 
 def ensure_model(model_id: str) -> Path:
     weights = CACTUS_WEIGHTS_DIR / model_id.split("/")[-1]
     if weights.exists() and any(weights.iterdir()):
         return weights
-    print(f"Downloading {model_id} ...", file=sys.stderr)
-    subprocess.run(["cactus", "download", model_id], check=True)
+    log.info("downloading model %s", model_id)
+    try:
+        subprocess.run(["cactus", "download", model_id], check=True)
+    except FileNotFoundError:
+        die(
+            ExitCode.ENV_MISSING_TOOL,
+            "`cactus` CLI not found on PATH",
+            "Install: brew install cactus-compute/cactus/cactus",
+        )
+    except subprocess.CalledProcessError as exc:
+        die(
+            ExitCode.SETUP_DOWNLOAD_FAILED,
+            f"`cactus download {model_id}` exited with {exc.returncode}",
+            "Check internet, disk space, or HF auth (gated models).",
+        )
     if not (weights.exists() and any(weights.iterdir())):
-        sys.exit(f"Download finished but weights still missing at {weights}")
+        die(
+            ExitCode.SETUP_DOWNLOAD_FAILED,
+            f"Download reported success but weights are missing at {weights}",
+            f"Try: cactus download {model_id} --reconvert",
+        )
     return weights
 
 
@@ -57,10 +97,20 @@ def text_chat(model_id: str, system: str, temperature: float, max_tokens: int) -
     ensure_lib_discoverable()
     weights = ensure_model(model_id)
 
-    import cactus
+    try:
+        import cactus
+    except ImportError as exc:
+        die(
+            ExitCode.ENV_MISSING_BINDINGS,
+            f"Cannot import `cactus` Python bindings: {exc}",
+            "Reinstall: brew reinstall cactus-compute/cactus/cactus",
+        )
 
-    print(f"Loading {model_id} from {weights} ...", file=sys.stderr)
-    model = cactus.cactus_init(str(weights), None, False)
+    log.info("loading %s from %s", model_id, weights)
+    try:
+        model = cactus.cactus_init(str(weights), None, False)
+    except Exception as exc:
+        die(ExitCode.SETUP_MODEL_LOAD_FAILED, f"cactus_init failed: {exc}")
 
     messages: list[dict[str, str]] = []
     if system:
@@ -242,19 +292,30 @@ def voice_chat(
     try:
         import numpy as np
         import sounddevice as sd
-    except ImportError:
-        sys.exit(
-            "Voice mode requires `sounddevice` and `numpy`.\n"
-            "Install: python3.14 -m pip install sounddevice numpy\n"
-            "(Or use ./run-cli which installs them automatically.)"
+    except ImportError as exc:
+        die(
+            ExitCode.ENV_MISSING_PYTHON_DEP,
+            f"Voice mode requires sounddevice + numpy: {exc}",
+            "Install: python3.14 -m pip install --break-system-packages sounddevice numpy",
+            "Or use ./run-cli which installs them automatically.",
         )
 
     weights = ensure_model(model_id)
 
-    import cactus
+    try:
+        import cactus
+    except ImportError as exc:
+        die(
+            ExitCode.ENV_MISSING_BINDINGS,
+            f"Cannot import `cactus` Python bindings: {exc}",
+            "Reinstall: brew reinstall cactus-compute/cactus/cactus",
+        )
 
-    print(f"Loading chat model {model_id} ...", file=sys.stderr)
-    model = cactus.cactus_init(str(weights), None, False)
+    log.info("loading chat model %s", model_id)
+    try:
+        model = cactus.cactus_init(str(weights), None, False)
+    except Exception as exc:
+        die(ExitCode.SETUP_MODEL_LOAD_FAILED, f"cactus_init failed: {exc}")
 
     # text-only conversation history (paired user/assistant text turns)
     history: list[dict] = []
@@ -447,15 +508,64 @@ def voice_chat(
 
 
 # ----------------------------------------------------------------------------
+# Coach mode — drill-driven JSON-structured speech practice
+# ----------------------------------------------------------------------------
+
+def coach_chat(
+    model_id: str,
+    voice: str | None,
+    temperature: float,
+    max_tokens: int,
+) -> None:
+    """Thin shim: load model + dylib, then hand off to coach.coach_mode()."""
+    ensure_lib_discoverable()
+    weights = ensure_model(model_id)
+
+    try:
+        import cactus
+    except ImportError as exc:
+        die(
+            ExitCode.ENV_MISSING_BINDINGS,
+            f"Cannot import `cactus` Python bindings: {exc}",
+            "Reinstall: brew reinstall cactus-compute/cactus/cactus",
+        )
+
+    try:
+        import coach as coach_mod
+    except ImportError as exc:
+        die(
+            ExitCode.ENV_MISSING_PYTHON_DEP,
+            f"Cannot import coach module: {exc}",
+            "Make sure cli/coach.py and cli/content.py are present.",
+        )
+
+    coach_mod.coach_mode(
+        cactus_module=cactus,
+        cactus_complete_audio=_cactus_complete_audio,
+        speak_blocking=speak_blocking,
+        stop_speaking=stop_speaking,
+        weights_path=weights,
+        voice_name=voice,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
+# ----------------------------------------------------------------------------
 # Entry
 # ----------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Local Cactus chat CLI (text or voice)")
-    parser.add_argument("--mode", choices=("text", "voice"), default="text")
+    parser = argparse.ArgumentParser(
+        description="Local Cactus chat CLI (text, voice, or coach)"
+    )
+    parser.add_argument(
+        "--mode", choices=("text", "voice", "coach"), default="text",
+        help="text REPL, open voice chat, or drill-driven coach session",
+    )
     parser.add_argument("--model", default="google/gemma-4-e2b-it",
                         help="HF id of chat model (default: gemma-4-e2b-it; "
-                             "voice mode requires a multimodal-audio model)")
+                             "voice/coach modes require a multimodal-audio model)")
     parser.add_argument("--voice-name", default=None,
                         help="macOS `say` voice name, e.g. Samantha, Daniel")
     parser.add_argument("--system",
@@ -467,19 +577,36 @@ def main() -> None:
                             "short sentences unless asked for more. Never "
                             "echo the user's words back. Never describe what "
                             "you heard. Just answer."
-                        ))
-    parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--max-tokens", type=int, default=128)
+                        ),
+                        help="System prompt (text/voice modes only; coach mode "
+                             "uses its own structured prompt)")
+    parser.add_argument("--temperature", type=float, default=0.7,
+                        help="Sampling temperature (coach mode defaults to 0.4)")
+    parser.add_argument("--max-tokens", type=int, default=128,
+                        help="Max generated tokens (coach mode bumps to 256)")
+    parser.add_argument("--log-level", default=None,
+                        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+                        help="Logger verbosity (overrides VOICE_COACH_LOG_LEVEL)")
     args = parser.parse_args()
+
+    _log.configure(args.log_level)
 
     if args.mode == "voice":
         voice_chat(
             args.model, args.system,
             args.temperature, args.max_tokens, args.voice_name,
         )
+    elif args.mode == "coach":
+        # Coach mode tunes its own defaults if the user accepted the chat ones.
+        temp = args.temperature if args.temperature != 0.7 else 0.4
+        max_tok = args.max_tokens if args.max_tokens != 128 else 256
+        coach_chat(args.model, args.voice_name, temp, max_tok)
     else:
         text_chat(args.model, args.system, args.temperature, args.max_tokens)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(ExitCode.USER_ABORT)
