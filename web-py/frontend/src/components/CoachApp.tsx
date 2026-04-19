@@ -574,7 +574,7 @@ export default function CoachApp() {
   return (
     <main
       className={
-        'mx-auto flex min-h-screen w-full flex-col px-6 py-10 ' +
+        'relative z-10 mx-auto flex min-h-screen w-full flex-col px-6 py-10 ' +
         (inSession ? 'max-w-6xl' : 'max-w-2xl')
       }
     >
@@ -582,7 +582,7 @@ export default function CoachApp() {
 
       <section className="flex flex-1 flex-col gap-4">
         {!isTTSAvailable() && (
-          <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-200">
+          <div className="rounded-xl border border-yellow-400/60 bg-yellow-100/80 px-4 py-2 text-xs text-yellow-900">
             This browser doesn't expose <code>speechSynthesis</code>. The coach
             will be silent — try Chrome, Edge, or Safari.
           </div>
@@ -651,23 +651,25 @@ export default function CoachApp() {
 function Header({ wsState }: { wsState: string }) {
   const dotColor =
     wsState === 'OPEN'
-      ? 'bg-emerald-400'
+      ? 'bg-[#1a6b45] shadow-[0_0_6px_2px_rgba(26,107,69,0.5)]'
       : wsState === 'CONNECTING'
-      ? 'bg-amber-400'
+      ? 'bg-[#f0a820] shadow-[0_0_6px_2px_rgba(240,168,32,0.5)]'
       : 'bg-rose-500';
   return (
-    <header className="mb-8 flex items-start justify-between">
+    <header className="relative mb-10 flex items-start justify-between">
       <div>
-        <h1 className="text-3xl font-semibold tracking-tight">Voice Coach</h1>
-        <p className="mt-1 text-sm text-zinc-400">
-          On-device speech practice. Powered by Gemma 4 + Cactus.
+        <h1 className="text-4xl font-extrabold tracking-tight text-[#0f4c81]">
+          Voice Coach
+        </h1>
+        <p className="mt-1.5 text-sm text-[#2d5a4a]">
+          On-device speech practice · Gemma 4 + Cactus
         </p>
       </div>
       <div
-        className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-wider text-zinc-500"
+        className="mt-2 flex items-center gap-2 rounded-full border border-white/60 bg-white/50 px-3 py-1.5 text-[10px] uppercase tracking-wider text-[#2d5a4a] backdrop-blur"
         title={`WebSocket: ${wsState}`}
       >
-        <span className={`inline-block h-2 w-2 rounded-full ${dotColor}`} />
+        <span className={`inline-block h-2 w-2 rounded-full transition ${dotColor}`} />
         {wsState}
       </div>
     </header>
@@ -676,9 +678,8 @@ function Header({ wsState }: { wsState: string }) {
 
 function Footer() {
   return (
-    <footer className="mt-8 border-t border-zinc-800 pt-4 text-xs text-zinc-500">
-      Audio is processed entirely on your machine. Nothing is sent to any cloud
-      service.
+    <footer className="mt-8 border-t border-[#1a6b45]/20 pt-4 text-xs text-[#2d5a4a]/70">
+      🔒 Audio is processed entirely on your machine. Nothing is sent to any cloud service.
     </footer>
   );
 }
@@ -693,11 +694,15 @@ function StatusCard({
   spinner?: boolean;
 }) {
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center">
-      <div className="text-lg">{label}</div>
-      {hint && <div className="mt-2 text-sm text-zinc-500">{hint}</div>}
+    <div className="card p-8 text-center">
+      <div className="text-lg font-semibold text-[#0f2420]">{label}</div>
+      {hint && <div className="mt-2 text-sm text-[#2d5a4a]">{hint}</div>}
       {spinner && (
-        <div className="mt-6 inline-block h-6 w-6 animate-spin rounded-full border-2 border-zinc-700 border-t-zinc-200" />
+        <div className="mt-6 flex items-center justify-center gap-2">
+          <div className="h-2.5 w-2.5 animate-bounce rounded-full bg-[#1a6b45] [animation-delay:-0.3s]" />
+          <div className="h-2.5 w-2.5 animate-bounce rounded-full bg-[#f0a820] [animation-delay:-0.15s]" />
+          <div className="h-2.5 w-2.5 animate-bounce rounded-full bg-[#8b7ed8]" />
+        </div>
       )}
     </div>
   );
@@ -705,18 +710,39 @@ function StatusCard({
 
 function StartCard({ onStart }: { onStart: () => void }) {
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-10 text-center">
-      <h2 className="text-2xl font-semibold">Ready when you are.</h2>
-      <p className="mx-auto mt-3 max-w-md text-zinc-400">
-        Ten short drills: 3 vowel warm-ups, 5 phrases, 2 conversation prompts.
-        Speak when prompted; the coach will respond with feedback.
-      </p>
-      <button
-        onClick={onStart}
-        className="mt-8 rounded-full bg-emerald-500 px-8 py-3 font-medium text-zinc-950 transition hover:bg-emerald-400 active:scale-[0.98]"
-      >
-        Start session
-      </button>
+    <div className="relative overflow-hidden rounded-3xl border border-white/70 bg-white/70 p-10 text-center shadow-2xl shadow-[#0f2420]/10 backdrop-blur">
+      <div className="pointer-events-none absolute -left-16 -top-16 h-56 w-56 rounded-full bg-[#1a6b45]/15 blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-16 -right-16 h-56 w-56 rounded-full bg-[#8b7ed8]/12 blur-3xl" />
+      <div className="pointer-events-none absolute right-12 top-8 h-28 w-28 rounded-full bg-[#f0a820]/15 blur-2xl" />
+
+      <div className="relative">
+        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#1a6b45]/10 text-3xl ring-1 ring-[#1a6b45]/20">
+          🎙️
+        </div>
+        <h2 className="text-3xl font-extrabold tracking-tight text-[#0f2420]">
+          Your{' '}
+          <span className="rounded-full bg-[#f0a820] px-3 py-0.5 text-white">
+            Happy
+          </span>{' '}
+          Place for Voice Practice
+        </h2>
+        <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-[#2d5a4a]">
+          Ten short drills — vowel warm-ups, phrases, and conversation prompts.
+          Speak when prompted; the on-device coach responds with instant feedback.
+        </p>
+        <div className="mt-6 flex justify-center gap-4 text-xs">
+          <span className="rounded-full bg-[#1a6b45]/10 px-3 py-1.5 font-medium text-[#1a6b45]">🔒 100% on-device</span>
+          <span className="rounded-full bg-[#8b7ed8]/10 px-3 py-1.5 font-medium text-[#6b5ec4]">✨ Gemma 4 AI</span>
+          <span className="rounded-full bg-[#f0a820]/10 px-3 py-1.5 font-medium text-[#b87c10]">⏱ ~10 min</span>
+        </div>
+        <button
+          onClick={onStart}
+          className="mt-8 rounded-full bg-[#0f2420] px-10 py-3.5 font-bold tracking-wide text-white shadow-lg shadow-[#0f2420]/30 transition hover:bg-[#1a6b45] active:scale-[0.97]"
+        >
+          Start Session
+        </button>
+        <div className="mt-3 text-xs font-medium text-[#1a6b45]">Learn how to join.</div>
+      </div>
     </div>
   );
 }
@@ -854,17 +880,26 @@ function StageIndicator({ drill }: { drill: DrillMsg }) {
           </span>
         </div>
       )}
-      <div className="flex gap-1">
-        {STAGES.map((s) => {
+      <div className="flex gap-1.5">
+        {STAGES.map((s, i) => {
           const active = drill.stage === s;
+          const done = STAGES.indexOf(drill.stage as Stage) > i;
+          const gradients = [
+            'from-violet-500 to-violet-400',
+            'from-sky-500 to-cyan-400',
+            'from-amber-500 to-yellow-400',
+            'from-emerald-500 to-teal-400',
+          ];
           return (
             <span
               key={s}
               className={
-                'rounded-full border px-3 py-1 transition ' +
+                'rounded-full border px-3 py-1 text-xs transition-all duration-300 ' +
                 (active
-                  ? 'border-emerald-400/70 bg-emerald-400/10 text-emerald-300'
-                  : 'border-zinc-800 bg-zinc-900/40 text-zinc-500')
+                  ? `bg-gradient-to-r ${gradients[i]} border-transparent text-zinc-950 font-semibold shadow-md`
+                  : done
+                  ? 'border-white/10 bg-white/5 text-slate-500 line-through'
+                  : 'border-white/5 bg-white/[0.03] text-slate-600')
               }
             >
               {STAGE_LABEL[s]}
@@ -890,29 +925,29 @@ function PromptCard({
   const reps = drill.target_repetitions ?? 0;
   const dur = drill.target_duration_sec ?? 0;
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6">
-      <div className="text-xs uppercase tracking-wider text-zinc-500">
+    <div className="card p-6">
+      <div className="text-xs font-semibold uppercase tracking-wider text-[#1a6b45]">
         {isInstructionOnly ? 'Phase cue' : 'Say this'}
       </div>
       {isInstructionOnly ? (
-        <div className="mt-2 text-2xl font-medium leading-snug">
+        <div className="mt-2 text-2xl font-bold leading-snug text-[#0f2420]">
           {drill.prompt}
         </div>
       ) : (
         <>
-          <div className="mt-2 text-3xl font-medium leading-tight">
-            “{drill.prompt}”
+          <div className="mt-2 text-3xl font-bold leading-tight text-[#0f2420]">
+            "{drill.prompt}"
           </div>
-          <div className="mt-3 text-sm text-zinc-400">{drill.note}</div>
+          <div className="mt-3 text-sm text-[#2d5a4a]">{drill.note}</div>
         </>
       )}
       {drill.focus && (
-        <div className="mt-3 text-xs text-emerald-300/80">
+        <div className="mt-3 inline-block rounded-full bg-[#f0a820]/15 px-2.5 py-1 text-xs font-medium text-[#b87c10]">
           focus: {drill.focus}
         </div>
       )}
       {(reps > 0 || dur > 0) && (
-        <div className="mt-1 font-mono text-[11px] text-zinc-500">
+        <div className="mt-1 font-mono text-[11px] text-[#2d5a4a]/60">
           {reps > 1 && `target ${reps} reps`}
           {reps > 1 && dur > 0 && ' · '}
           {dur > 0 && `~${dur}s each`}
@@ -920,7 +955,7 @@ function PromptCard({
       )}
       <button
         onClick={onRepeat}
-        className="mt-4 text-xs text-zinc-400 underline-offset-4 hover:text-zinc-200 hover:underline"
+        className="mt-4 text-xs font-medium text-[#1a6b45] underline-offset-4 hover:underline"
       >
         ▶︎ hear it again
       </button>
@@ -948,39 +983,40 @@ function MicButton({
   const isDrill = phase === 'drill';
   const disabled = isThinking;
 
-  const ringScale = isRecording ? 1 + level * 0.6 : 1;
-  const ringTone = isRecording
-    ? speaking
-      ? 'bg-emerald-400/25'
-      : 'bg-rose-500/20'
-    : 'bg-transparent';
+  const ringScale = isRecording ? 1 + level * 0.5 : 1;
 
   return (
     <div className="my-4 flex flex-col items-center gap-2">
-      <div className="relative">
+      <div className="relative flex items-center justify-center">
+        {/* animated pulse ring */}
         {isRecording && (
-          <div
-            className={`absolute inset-0 rounded-full transition-transform duration-100 ${ringTone}`}
-            style={{ transform: `scale(${ringScale})` }}
-          />
+          <>
+            <div
+              className={`absolute h-24 w-24 rounded-full mic-ring-anim ${speaking ? 'bg-emerald-400/30' : 'bg-rose-400/20'}`}
+            />
+            <div
+              className={`absolute h-24 w-24 rounded-full transition-transform duration-100 ${speaking ? 'bg-emerald-400/15' : 'bg-rose-400/10'}`}
+              style={{ transform: `scale(${ringScale + 0.3})` }}
+            />
+          </>
         )}
         <button
           onClick={isRecording ? onStop : onStart}
           disabled={disabled}
           className={
-            'relative flex h-24 w-24 items-center justify-center rounded-full text-3xl font-semibold transition active:scale-95 ' +
+            'relative flex h-24 w-24 items-center justify-center rounded-full text-3xl font-semibold transition-all duration-200 active:scale-95 ' +
             (isRecording
               ? speaking
-                ? 'bg-emerald-500 text-zinc-950 shadow-lg shadow-emerald-500/40'
-                : 'bg-rose-500 text-white shadow-lg shadow-rose-500/40'
+                ? 'bg-gradient-to-br from-emerald-400 to-teal-500 text-zinc-950 glow-emerald'
+                : 'bg-gradient-to-br from-rose-500 to-rose-600 text-white glow-rose'
               : isThinking
-              ? 'bg-zinc-700 text-zinc-400'
-              : 'bg-emerald-500 text-zinc-950 shadow-lg shadow-emerald-500/30 hover:bg-emerald-400')
+              ? 'bg-zinc-800 text-zinc-500'
+              : 'bg-gradient-to-br from-emerald-400 to-teal-500 text-zinc-950 shadow-xl shadow-emerald-500/40 hover:shadow-emerald-500/60')
           }
           aria-label={isRecording ? 'Stop recording' : 'Start recording'}
         >
           {isThinking ? (
-            <span className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-200" />
+            <span className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-300" />
           ) : isRecording ? (
             '■'
           ) : (
@@ -1068,8 +1104,8 @@ function LiveAnalyzer({
   const speaking = (analysis?.speaking ?? false) && recording;
 
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
-      <div className="mb-3 flex items-center justify-between text-[10px] uppercase tracking-wider text-zinc-500">
+    <div className="card p-4">
+      <div className="mb-3 flex items-center justify-between text-[10px] uppercase tracking-wider text-[#8b7ed8]">
         <span>Live signal</span>
         <span className="flex items-center gap-1.5">
           <span
@@ -1222,8 +1258,8 @@ function LiveTranscript({
   const recording = phase === 'recording';
   const empty = !transcript.final && !transcript.interim;
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
-      <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-zinc-500">
+    <div className="card p-4">
+      <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-[#8b7ed8]">
         <span>Live transcript</span>
         <span className="flex items-center gap-1.5">
           <span
@@ -1400,10 +1436,10 @@ function AutoModeRow({
   // It's harmless but confusing — disable while a turn is in flight.
   const disabled = phase === 'recording' || phase === 'thinking';
   return (
-    <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-2 text-xs text-zinc-400">
+    <div className="card flex items-center justify-between px-4 py-2 text-xs text-[#8b7ed8]">
       <span>
         Auto mic{' '}
-        <span className="text-zinc-600">
+        <span className="text-[#8b7ed8]/60">
           (arms after the prompt, stops when you go quiet)
         </span>
       </span>
@@ -1411,7 +1447,7 @@ function AutoModeRow({
         onClick={onToggle}
         disabled={disabled}
         className={
-          'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-40 ' +
+          'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-60 disabled:pointer-events-none ' +
           (autoMode ? 'bg-emerald-500' : 'bg-zinc-700')
         }
         aria-pressed={autoMode}
@@ -1447,7 +1483,7 @@ function CoachCard({ coach }: { coach: CoachMsg }) {
       {coach.heard && (
         <div className="mt-3 text-sm">
           <span className="text-zinc-500">heard:</span>{' '}
-          <span className="font-medium">“{coach.heard}”</span>{' '}
+          <span className="font-medium">"{coach.heard}"</span>{' '}
           {!matched && (
             <span className="ml-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] uppercase tracking-wider text-rose-300">
               mismatch
@@ -1494,7 +1530,7 @@ function CoachCard({ coach }: { coach: CoachMsg }) {
 
 function TransientError({ message }: { message: string }) {
   return (
-    <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
+    <div className="rounded-xl border border-rose-400/30 bg-white/30 px-4 py-2 text-sm text-rose-600 backdrop-blur">
       {message}
     </div>
   );
@@ -1532,10 +1568,10 @@ function ActionBar({
   const cmdDisabled = disabled || commandPhase === 'thinking';
   const cmdTone =
     commandPhase === 'listening'
-      ? 'border-rose-500/40 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25'
+      ? 'border-rose-400/30 bg-rose-400/10 text-rose-600 hover:bg-rose-400/20'
       : commandPhase === 'thinking'
-      ? 'border-zinc-700 bg-zinc-800/60 text-zinc-400'
-      : 'border-sky-500/40 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20';
+      ? 'border-[#8b7ed8]/20 bg-white/20 text-[#8b7ed8]'
+      : 'border-[#8b7ed8]/20 bg-white/30 text-[#6b5ec4] hover:bg-white/50';
   const cmdLabel =
     commandPhase === 'listening'
       ? 'Listening — tap to stop'
@@ -1571,7 +1607,7 @@ function ActionBar({
           disabled={cmdDisabled}
           title="Voice command via Cactus Whisper + FunctionGemma 270M"
           className={
-            'rounded-full border px-3 py-1.5 text-sm transition disabled:opacity-40 ' +
+            'rounded-full border px-3 py-1.5 text-sm transition disabled:opacity-60 disabled:pointer-events-none ' +
             cmdTone
           }
         >
@@ -1601,15 +1637,15 @@ function ChipButton({
   // user (often elderly, often shaky) doesn't tap it by mistake.
   const cls =
     tone === 'danger'
-      ? 'border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
-      : 'border-zinc-700 bg-zinc-900/50 text-zinc-200 hover:bg-zinc-800/70';
+      ? 'border-rose-400/30 bg-rose-400/10 text-rose-600 hover:bg-rose-400/20'
+      : 'border-[#1a6b45]/20 bg-white/30 text-[#1a6b45] hover:bg-white/50';
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
       className={
-        'rounded-full border px-3 py-1.5 text-sm transition disabled:opacity-40 ' +
+        'rounded-full border px-3 py-1.5 text-sm transition disabled:opacity-60 disabled:pointer-events-none ' +
         cls
       }
     >
@@ -1751,7 +1787,7 @@ function TestVoiceRow() {
     setOk(fired);
   };
   return (
-    <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-2 text-xs text-zinc-400">
+    <div className="card flex items-center justify-between px-4 py-2 text-xs text-[#2d5a4a]">
       <span>
         {!tested && 'Quick check: does your browser play voice?'}
         {tested && ok && (
@@ -1768,7 +1804,7 @@ function TestVoiceRow() {
       </span>
       <button
         onClick={onTest}
-        className="ml-3 shrink-0 rounded-full border border-zinc-700 px-3 py-1 text-zinc-300 transition hover:bg-zinc-800/60"
+        className="ml-3 shrink-0 rounded-full border border-[#1a6b45]/20 bg-white/30 px-3 py-1 text-[#1a6b45] transition hover:bg-white/50"
       >
         🔊 Test voice
       </button>
