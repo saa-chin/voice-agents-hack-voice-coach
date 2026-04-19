@@ -66,7 +66,11 @@ def text_chat(model_id: str, system: str, temperature: float, max_tokens: int) -
     if system:
         messages.append({"role": "system", "content": system})
 
-    options = json.dumps({"temperature": temperature, "max_tokens": max_tokens})
+    options = json.dumps({
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "confidence_threshold": 0.0,
+    })
 
     print("Type your message. Commands: /reset clears history, /quit exits.\n")
     try:
@@ -114,12 +118,15 @@ def text_chat(model_id: str, system: str, temperature: float, max_tokens: int) -
 # ----------------------------------------------------------------------------
 
 VOICE_SR = 16000
-VOICE_FRAME_MS = 100
-VOICE_FRAME_SAMPLES = VOICE_SR * VOICE_FRAME_MS // 1000  # 1600
+VOICE_FRAME_MS = 50
+VOICE_FRAME_SAMPLES = VOICE_SR * VOICE_FRAME_MS // 1000  # 800
 VOICE_SILENCE_RMS = 350.0          # int16 RMS threshold for "speech"
-VOICE_END_OF_TURN_MS = 900         # silence after speech to end a turn
-VOICE_MIN_SPEECH_MS = 350          # ignore blips shorter than this
+VOICE_END_OF_TURN_MS = 600         # silence after speech to end a turn
+VOICE_MIN_SPEECH_MS = 250          # ignore blips shorter than this
 VOICE_MAX_UTTERANCE_MS = 28_000    # hard cap (Gemma 4 audio works to ~30s)
+VOICE_PREROLL_MS = 200             # keep this much pre-speech audio for context
+VOICE_POST_TTS_PAUSE_MS = 350      # wait after TTS so we don't hear ourselves
+VOICE_HISTORY_TURNS = 4            # text-only history turns to keep for context
 
 _SAY_LOCK = threading.Lock()
 _SAY_PROCESS: subprocess.Popen | None = None
@@ -249,18 +256,26 @@ def voice_chat(
     print(f"Loading chat model {model_id} ...", file=sys.stderr)
     model = cactus.cactus_init(str(weights), None, False)
 
-    messages: list[dict] = []
-    if system:
-        messages.append({"role": "system", "content": system})
+    # text-only conversation history (paired user/assistant text turns)
+    history: list[dict] = []
+    sys_msg = {"role": "system", "content": system} if system else None
 
-    chat_options = json.dumps({"temperature": temperature, "max_tokens": max_tokens})
+    # confidence_threshold=0 disables Cactus's automatic cloud handoff —
+    # we want fully local, no warnings, no missed-key delays.
+    chat_options = json.dumps({
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "confidence_threshold": 0.0,
+    })
 
     end_silence_frames = max(1, VOICE_END_OF_TURN_MS // VOICE_FRAME_MS)
     min_speech_frames = max(1, VOICE_MIN_SPEECH_MS // VOICE_FRAME_MS)
     max_frames = VOICE_MAX_UTTERANCE_MS // VOICE_FRAME_MS
+    preroll_frames = max(0, VOICE_PREROLL_MS // VOICE_FRAME_MS)
+    post_tts_pause_s = VOICE_POST_TTS_PAUSE_MS / 1000.0
 
     print()
-    print(f"Voice chat ready. Gemma 4 listens to your voice directly.")
+    print("Voice chat ready. Gemma 4 listens to your voice directly.")
     print(f"Pause ~{VOICE_END_OF_TURN_MS}ms to send. Ctrl+C exits.")
     print()
 
@@ -283,6 +298,7 @@ def voice_chat(
             silence_frames = 0
             total_frames = 0
             captured: list[bytes] = []
+            preroll: list[bytes] = []
 
             with sd.InputStream(
                 samplerate=VOICE_SR,
@@ -290,6 +306,15 @@ def voice_chat(
                 dtype="int16",
                 blocksize=VOICE_FRAME_SAMPLES,
             ) as mic:
+                # Drain any frames buffered while TTS was playing — those
+                # are echoes of the bot's own voice through the speakers.
+                drain_until = time.monotonic() + post_tts_pause_s
+                while time.monotonic() < drain_until:
+                    try:
+                        mic.read(VOICE_FRAME_SAMPLES)
+                    except Exception:
+                        break
+
                 while True:
                     data, _overflow = mic.read(VOICE_FRAME_SAMPLES)
                     frame = np.asarray(data, dtype=np.int16).reshape(-1)
@@ -297,18 +322,25 @@ def voice_chat(
                         continue
                     rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
                     is_speech = rms > VOICE_SILENCE_RMS
+                    raw = frame.tobytes()
 
                     if is_speech:
                         if not speech_started:
                             speech_started = True
+                            captured.extend(preroll)
+                            preroll.clear()
                             print("(hearing you) ", end="", flush=True)
                         speech_frames += 1
                         silence_frames = 0
                     elif speech_started:
                         silence_frames += 1
+                    else:
+                        preroll.append(raw)
+                        if len(preroll) > preroll_frames:
+                            preroll.pop(0)
 
                     if speech_started:
-                        captured.append(frame.tobytes())
+                        captured.append(raw)
                         total_frames += 1
 
                     if (
@@ -414,11 +446,17 @@ def main() -> None:
     parser.add_argument("--voice-name", default=None,
                         help="macOS `say` voice name, e.g. Samantha, Daniel")
     parser.add_argument("--system",
-                        default=("You are a concise, helpful voice assistant. "
-                                 "The user is talking to you out loud. "
-                                 "Reply naturally in 1-3 short sentences."))
+                        default=(
+                            "You are a friendly, natural-sounding voice "
+                            "assistant. The user is speaking to you out loud, "
+                            "so reply the way a person would in conversation: "
+                            "warm, brief, and direct. Keep responses to 1-2 "
+                            "short sentences unless asked for more. Never "
+                            "echo the user's words back. Never describe what "
+                            "you heard. Just answer."
+                        ))
     parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--max-tokens", type=int, default=256)
+    parser.add_argument("--max-tokens", type=int, default=128)
     args = parser.parse_args()
 
     if args.mode == "voice":
