@@ -1,0 +1,29 @@
+:root {
+  --background: #0b1020;
+  --card: #141b34;
+  --card-border: #273158;
+  --text: #e8ecff;
+  --muted: #a9b3d9;
+  --accent: #8ab4ff;
+  --good: #9cf6b6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: Arial, Helvetica, sans-serif;
+  background: linear-gradient(180deg, #0b1020 0%, #0f1530 100%);
+  color: var(--text);
+}
+
+a {
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
