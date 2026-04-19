@@ -10,9 +10,12 @@
     "test": "jest"
   },
   "dependencies": {
+    "@react-native/new-app-screen": "0.85.1",
+    "cactus-react-native": "^1.13.0",
     "react": "19.2.3",
     "react-native": "0.85.1",
-    "@react-native/new-app-screen": "0.85.1",
+    "react-native-audio-record": "^0.2.2",
+    "react-native-nitro-modules": "^0.33.9",
     "react-native-safe-area-context": "^5.5.2"
   },
   "devDependencies": {
