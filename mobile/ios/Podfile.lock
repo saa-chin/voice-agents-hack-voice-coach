@@ -1864,6 +1864,28 @@ PODS:
     - React-utils (= 0.85.1)
     - ReactNativeDependencies
   - ReactNativeDependencies (0.85.1)
+  - ReactNativeFs (2.38.2):
+    - hermes-engine
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-Core-prebuilt
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - ReactNativeDependencies
+    - Yoga
   - RNAudioRecord (0.2.2):
     - React
   - Yoga (0.0.0)
@@ -1946,6 +1968,7 @@ DEPENDENCIES:
   - ReactCodegen (from `build/generated/ios/ReactCodegen`)
   - ReactCommon/turbomodule/core (from `../node_modules/react-native/ReactCommon`)
   - ReactNativeDependencies (from `../node_modules/react-native/third-party-podspecs/ReactNativeDependencies.podspec`)
+  - "ReactNativeFs (from `../node_modules/@dr.pogodin/react-native-fs`)"
   - RNAudioRecord (from `../node_modules/react-native-audio-record`)
   - Yoga (from `../node_modules/react-native/ReactCommon/yoga`)
 
@@ -2105,6 +2128,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon"
   ReactNativeDependencies:
     :podspec: "../node_modules/react-native/third-party-podspecs/ReactNativeDependencies.podspec"
+  ReactNativeFs:
+    :path: "../node_modules/@dr.pogodin/react-native-fs"
   RNAudioRecord:
     :path: "../node_modules/react-native-audio-record"
   Yoga:
@@ -2186,6 +2211,7 @@ SPEC CHECKSUMS:
   ReactCodegen: aac672d7021359dc55fbd6d63f56192651664f09
   ReactCommon: 66763e5bd1b778828ff6cb82d771b7162a5215c2
   ReactNativeDependencies: 99a02a42aba86eb0a6ba337133b837fb19d2585c
+  ReactNativeFs: 21026144ac71a65acf6855c52b1a8eb31012bb5d
   RNAudioRecord: b253d15d8141c5ef6bc614fc9d9f06577870bfc3
   Yoga: b1085f68c014785350a2afdc95eaef0d49f23ccb
   ZIPFoundation: dfd3d681c4053ff7e2f7350bc4e53b5dba3f5351
