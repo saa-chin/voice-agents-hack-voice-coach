@@ -46,13 +46,14 @@ type Phase =
   | 'done'
   | 'error';
 
-const STAGES = ['warmup', 'phrase', 'conversation'] as const;
+const STAGES = ['warmup', 'glide', 'counting', 'main_task'] as const;
 type Stage = (typeof STAGES)[number];
 
 const STAGE_LABEL: Record<Stage, string> = {
   warmup: 'Warm-up',
-  phrase: 'Phrases',
-  conversation: 'Conversation',
+  glide: 'Pitch glide',
+  counting: 'Counting',
+  main_task: 'Main task',
 };
 
 export default function CoachApp() {
@@ -143,7 +144,7 @@ export default function CoachApp() {
         setCoach(null);
         setTransientError(null);
         setPhase('drill');
-        speak(`Please say: ${msg.prompt}`);
+        speak(buildDrillTTS(msg));
         return;
       case 'metrics':
         setMetrics(msg);
@@ -235,7 +236,7 @@ export default function CoachApp() {
   };
 
   const repeatPrompt = () => {
-    if (drill) speak(`Please say: ${drill.prompt}`);
+    if (drill) speak(buildDrillTTS(drill));
   };
   const skipDrill = () => wsRef.current?.send({ type: 'command', action: 'skip' });
   const restSession = () => wsRef.current?.send({ type: 'command', action: 'rest' });
@@ -433,7 +434,23 @@ function SessionView({
 
 function StageIndicator({ drill }: { drill: DrillMsg }) {
   return (
-    <div className="flex items-center justify-between text-xs">
+    <div className="flex flex-col gap-2 text-xs">
+      {drill.exercise_name && (
+        <div className="flex items-center justify-between text-[11px] uppercase tracking-wider text-zinc-500">
+          <span>
+            {drill.category_name && (
+              <>
+                <span className="text-zinc-600">{drill.category_name}</span>
+                <span className="mx-1 text-zinc-700">›</span>
+              </>
+            )}
+            <span className="text-zinc-300">{drill.exercise_name}</span>
+          </span>
+          <span>
+            step {drill.position + 1} / {drill.total}
+          </span>
+        </div>
+      )}
       <div className="flex gap-1">
         {STAGES.map((s) => {
           const active = drill.stage === s;
@@ -452,9 +469,6 @@ function StageIndicator({ drill }: { drill: DrillMsg }) {
           );
         })}
       </div>
-      <span className="text-zinc-500">
-        {drill.position + 1} of {drill.total}
-      </span>
     </div>
   );
 }
@@ -466,16 +480,40 @@ function PromptCard({
   drill: DrillMsg;
   onRepeat: () => void;
 }) {
+  // For instruction-only phases (warmup, glide), `note` is empty and the
+  // `prompt` IS the full instruction. Render it as the cue rather than as
+  // an "expected utterance" in quotes.
+  const isInstructionOnly = !drill.note?.trim();
+  const reps = drill.target_repetitions ?? 0;
+  const dur = drill.target_duration_sec ?? 0;
   return (
     <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6">
       <div className="text-xs uppercase tracking-wider text-zinc-500">
-        Say this
+        {isInstructionOnly ? 'Phase cue' : 'Say this'}
       </div>
-      <div className="mt-2 text-3xl font-medium leading-tight">
-        “{drill.prompt}”
-      </div>
-      {drill.note && (
-        <div className="mt-3 text-sm text-zinc-400">{drill.note}</div>
+      {isInstructionOnly ? (
+        <div className="mt-2 text-2xl font-medium leading-snug">
+          {drill.prompt}
+        </div>
+      ) : (
+        <>
+          <div className="mt-2 text-3xl font-medium leading-tight">
+            “{drill.prompt}”
+          </div>
+          <div className="mt-3 text-sm text-zinc-400">{drill.note}</div>
+        </>
+      )}
+      {drill.focus && (
+        <div className="mt-3 text-xs text-emerald-300/80">
+          focus: {drill.focus}
+        </div>
+      )}
+      {(reps > 0 || dur > 0) && (
+        <div className="mt-1 font-mono text-[11px] text-zinc-500">
+          {reps > 1 && `target ${reps} reps`}
+          {reps > 1 && dur > 0 && ' · '}
+          {dur > 0 && `~${dur}s each`}
+        </div>
       )}
       <button
         onClick={onRepeat}
@@ -768,6 +806,17 @@ function TestVoiceRow() {
 }
 
 // ---- helpers --------------------------------------------------------------
+
+function buildDrillTTS(drill: DrillMsg): string {
+  // For instruction-only phases (warmup, glide), `note` is empty and the
+  // `prompt` IS the full instruction — just speak it. For phases with
+  // explicit content (counting, main_task), speak the cue then the
+  // expected utterance.
+  const note = (drill.note ?? '').trim();
+  const prompt = (drill.prompt ?? '').trim();
+  if (!note) return prompt;
+  return `${note.replace(/[.!?,;: ]+$/, '')}. Now: ${prompt}.`;
+}
 
 function joinForSpeech(ack: string, feedback: string): string {
   const trim = (s: string) => s.replace(/[\s.!?,;:]+$/, '');

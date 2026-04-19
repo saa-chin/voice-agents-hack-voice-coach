@@ -185,35 +185,75 @@ class TestRmsToDbfs:
 # ---- build_prompt --------------------------------------------------------
 
 class TestBuildPrompt:
-    def test_includes_drill_prompt_text(self):
-        d = content.WARMUPS[0]
-        out = coach.build_prompt(d, -22.0, 1.5)
-        assert d.prompt in out
-        assert d.stage in out
+    @pytest.fixture
+    def warmup_drill(self):
+        # First drill of vl_1 is a warmup.
+        drills = content.drills_for_exercise("vl_1")
+        return next(d for d in drills if d.stage == "warmup")
 
-    def test_includes_measurements(self):
-        d = content.PHRASES[0]
-        out = coach.build_prompt(d, -19.4, 2.31)
+    @pytest.fixture
+    def main_task_drill(self):
+        drills = content.drills_for_exercise("vl_1")
+        return next(d for d in drills if d.stage == "main_task")
+
+    def test_includes_drill_prompt_text(self, warmup_drill):
+        out = coach.build_prompt(warmup_drill, -22.0, 1.5)
+        assert warmup_drill.prompt in out
+
+    def test_uses_human_friendly_stage_label(self, main_task_drill):
+        out = coach.build_prompt(main_task_drill, -15.0, 5.0)
+        # main_task → "main task" (underscore stripped) in the rendered prompt
+        assert "main task" in out
+        # The raw enum name should NOT appear as user-visible label text
+        assert "main_task" not in out
+
+    def test_includes_measurements(self, main_task_drill):
+        out = coach.build_prompt(main_task_drill, -19.4, 2.31)
         assert "-19.4" in out
         assert "2.3" in out
-        assert f"{d.target_dbfs}" in out
+        assert f"{main_task_drill.target_dbfs}" in out
 
-    def test_handles_negative_infinity_dbfs(self):
+    def test_handles_negative_infinity_dbfs(self, warmup_drill):
         """Silence (-inf dBFS) must not produce 'inf' in the prompt — Gemma chokes on that."""
-        d = content.WARMUPS[0]
-        out = coach.build_prompt(d, -math.inf, 0.0)
+        out = coach.build_prompt(warmup_drill, -math.inf, 0.0)
         assert "inf" not in out.lower()
-        # We replace -inf with -90 dBFS (a meaningful 'effectively silent' value).
         assert "-90" in out
 
-    def test_mentions_json_only(self):
-        d = content.WARMUPS[0]
-        out = coach.build_prompt(d, -20.0, 1.0)
-        # Must instruct strict JSON output, not "respond conversationally".
+    def test_mentions_json_only(self, warmup_drill):
+        out = coach.build_prompt(warmup_drill, -20.0, 1.0)
         assert "JSON" in out
-        # Must spell out the schema fields the parser expects.
         for key in ("ack", "feedback", "next_action", "metrics_observed", "heard"):
             assert key in out
+
+    def test_includes_exercise_name(self, warmup_drill):
+        out = coach.build_prompt(warmup_drill, -20.0, 1.0)
+        assert "Sustained Vowel Power" in out
+
+    def test_includes_focus_when_present(self, main_task_drill):
+        out = coach.build_prompt(main_task_drill, -15.0, 5.0)
+        assert main_task_drill.focus in out
+        assert "Focus:" in out
+
+    def test_omits_focus_line_when_absent(self, warmup_drill):
+        # Warmup phase has no `focus` field in the JSON.
+        assert warmup_drill.focus == ""
+        out = coach.build_prompt(warmup_drill, -20.0, 1.0)
+        assert "Focus:" not in out
+
+    def test_falls_back_to_prompt_when_note_empty(self, warmup_drill):
+        """For instruction-only phases, note is empty — phase cue should still appear."""
+        assert warmup_drill.note == ""
+        out = coach.build_prompt(warmup_drill, -20.0, 1.0)
+        # The phase_instruction line uses prompt as the cue, so it appears.
+        assert "Phase cue:" in out
+
+    def test_unknown_stage_label_falls_back_gracefully(self):
+        """Custom drills with unknown stages should still render readable prompts."""
+        d = content.Drill(stage="custom_stage", index=0, prompt="hello",
+                          exercise_name="Custom")
+        out = coach.build_prompt(d, -20.0, 1.0)
+        # Underscores get replaced with spaces in the displayed label.
+        assert "custom stage" in out
 
 
 # ---- _join_for_speech ----------------------------------------------------

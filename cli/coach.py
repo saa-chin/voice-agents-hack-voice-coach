@@ -35,17 +35,31 @@ from content import Drill, default_drill_set
 log = _log.get("coach")
 
 
-# --- Audio capture constants (kept in sync with chat.py voice mode) -------
+# --- Audio capture constants ----------------------------------------------
+#
+# This module is the *canonical* source for the audio-format constants below.
+# They define the wire format Gemma 4's audio encoder expects (16 kHz mono
+# Int16 PCM, ~50 ms frames). Every other consumer in the repo MUST match:
+#   - cli/chat.py            imports SR, FRAME_MS, etc. from here
+#   - web-py/backend         imports SR, MIN_SPEECH_MS via `import coach`
+#   - web-py/frontend audio  hard-coded `TARGET_SAMPLE_RATE = 16000` —
+#                            keep it in sync with SR below
+#   - mobile/App.tsx         hard-coded `SAMPLE_RATE = 16000` —
+#                            keep it in sync with SR below
 
 SR = 16000
 FRAME_MS = 50
 FRAME_SAMPLES = SR * FRAME_MS // 1000  # 800
 SILENCE_RMS = 350.0
-END_OF_TURN_MS = 800
 MIN_SPEECH_MS = 250
 MAX_UTTERANCE_MS = 28_000
 PREROLL_MS = 200
 POST_TTS_PAUSE_MS = 350
+
+# Coach mode allows longer pauses than open voice chat: patients may pause
+# mid-utterance during phrase practice, so 800 ms of silence ends the turn
+# here vs 600 ms (VOICE_END_OF_TURN_MS) in chat.py's conversational mode.
+END_OF_TURN_MS = 800
 
 MAX_RETRIES_PER_DRILL = 2
 
@@ -59,11 +73,22 @@ SESSION_DIR = Path(
 
 # --- Prompt + JSON contract ----------------------------------------------
 
+_STAGE_LABEL = {
+    "warmup": "warm-up",
+    "glide": "pitch glide",
+    "counting": "counting",
+    "main_task": "main task",
+}
+
+
 COACH_SYSTEM_TEMPLATE = """You are a warm, patient speech coach for adults with motor speech
 disorders (Parkinson's, post-stroke dysarthria).
 
-The patient is on a {stage} drill. They were ASKED to say:
-"{prompt}"
+The patient is doing the "{exercise_name}" exercise.
+Phase: {stage_label}.
+Phase cue: {phase_instruction}
+{focus_line}
+Expected utterance: "{prompt}"
 
 You will hear their attempt as audio. Do these in order:
 
@@ -72,14 +97,18 @@ You will hear their attempt as audio. Do these in order:
    only silence or noise, write "heard": "(nothing clear)".
 
 2. Decide whether what you heard matches what was asked. Set
-   "metrics_observed.matched_prompt" accordingly. For warm-up vowels,
-   loose vowel matches count (e.g. "ah" ~ "aaah"). For phrases, the
-   key content words must be present.
+   "metrics_observed.matched_prompt" accordingly.
+   - For warm-up / pitch-glide / sustained vowels, loose vowel matches
+     count (e.g. "ah" ~ "aaah", "oo" ~ "ooh").
+   - For counting (1 to 10), the digits must be present in order.
+   - For words, phrases and sentences, the key content words must be
+     present (close paraphrases are fine if intent is preserved).
+   - For Pa-Ta-Ka style articulation drills, repeat-syllable patterns
+     count even if the model can't fully transcribe each token.
 
 3. If matched_prompt is FALSE: set "next_action" to "retry" and have
-   "feedback" gently say what you heard and ask them to try the
-   requested prompt again. Example feedback: "I heard 'nah' — try
-   the long vowel 'aaah' once more, holding it steady."
+   "feedback" gently say what you heard and ask them to try again.
+   Example: "I heard 'nah' — try the long vowel 'aaah' once more."
 
 4. If matched_prompt is TRUE: give vocal-quality feedback grounded in
    these measurements (relative, NOT room-calibrated SPL):
@@ -108,8 +137,19 @@ Respond with JSON ONLY. No prose, no markdown fences. Schema:
 
 
 def build_prompt(drill: Drill, achieved_dbfs: float, duration_s: float) -> str:
+    """Render the system prompt sent to Gemma for one drill step."""
+    stage_label = _STAGE_LABEL.get(drill.stage, drill.stage.replace("_", " "))
+    # The note from the JSON program is the human-language instruction for the
+    # phase. For instruction-only phases (warmup, glide), prompt and note are
+    # the same string — fall back to the prompt to avoid an empty cue line.
+    phase_instruction = drill.note.strip() or drill.prompt.strip() or "(no cue)"
+    focus_line = f"Focus: {drill.focus}" if drill.focus else ""
+    exercise_name = drill.exercise_name or "speech practice"
     return COACH_SYSTEM_TEMPLATE.format(
-        stage=drill.stage,
+        exercise_name=exercise_name,
+        stage_label=stage_label,
+        phase_instruction=phase_instruction,
+        focus_line=focus_line,
         prompt=drill.prompt,
         achieved_dbfs=achieved_dbfs if math.isfinite(achieved_dbfs) else -90.0,
         target_dbfs=drill.target_dbfs,

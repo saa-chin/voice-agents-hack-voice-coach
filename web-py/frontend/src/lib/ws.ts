@@ -21,6 +21,16 @@ export interface DrillMsg {
   target_dbfs: number;
   total: number;
   position: number;
+  // Richer context from the clinical program. Backend always sends these
+  // (defaults to empty strings / 0 for legacy drills); frontend can rely on
+  // them being present on every `drill` message.
+  category_id?: string;
+  category_name?: string;
+  exercise_id?: string;
+  exercise_name?: string;
+  focus?: string;
+  target_repetitions?: number;
+  target_duration_sec?: number;
 }
 
 export interface MetricsMsg {

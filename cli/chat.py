@@ -166,17 +166,28 @@ def text_chat(model_id: str, system: str, temperature: float, max_tokens: int) -
 # ----------------------------------------------------------------------------
 # Voice chat — Gemma 4 audio-native (no Whisper)
 # ----------------------------------------------------------------------------
+#
+# Audio-format constants are owned by cli/coach.py and re-exported here under
+# their chat-mode-prefixed names so the existing voice_chat() body keeps
+# reading naturally. If you change a value, change it in coach.py.
 
-VOICE_SR = 16000
-VOICE_FRAME_MS = 50
-VOICE_FRAME_SAMPLES = VOICE_SR * VOICE_FRAME_MS // 1000  # 800
-VOICE_SILENCE_RMS = 350.0          # int16 RMS threshold for "speech"
-VOICE_END_OF_TURN_MS = 600         # silence after speech to end a turn
-VOICE_MIN_SPEECH_MS = 250          # ignore blips shorter than this
-VOICE_MAX_UTTERANCE_MS = 28_000    # hard cap (Gemma 4 audio works to ~30s)
-VOICE_PREROLL_MS = 200             # keep this much pre-speech audio for context
-VOICE_POST_TTS_PAUSE_MS = 350      # wait after TTS so we don't hear ourselves
-VOICE_HISTORY_TURNS = 4            # text-only history turns to keep for context
+import coach as _coach  # local alias to avoid clobbering the chat-history `coach`
+
+VOICE_SR = _coach.SR
+VOICE_FRAME_MS = _coach.FRAME_MS
+VOICE_FRAME_SAMPLES = _coach.FRAME_SAMPLES
+VOICE_SILENCE_RMS = _coach.SILENCE_RMS          # int16 RMS threshold for "speech"
+VOICE_MIN_SPEECH_MS = _coach.MIN_SPEECH_MS      # ignore blips shorter than this
+VOICE_MAX_UTTERANCE_MS = _coach.MAX_UTTERANCE_MS  # hard cap (Gemma 4 audio works to ~30s)
+VOICE_PREROLL_MS = _coach.PREROLL_MS            # keep this much pre-speech audio for context
+VOICE_POST_TTS_PAUSE_MS = _coach.POST_TTS_PAUSE_MS  # wait after TTS so we don't hear ourselves
+
+# Chat-specific (intentionally diverges from coach mode):
+# Conversational chat ends turns faster than coach drills (600 vs 800 ms),
+# because we want snappy back-and-forth rather than tolerance for mid-thought
+# pauses during phrase practice.
+VOICE_END_OF_TURN_MS = 600
+VOICE_HISTORY_TURNS = 4   # text-only history turns to keep for context
 
 _SAY_LOCK = threading.Lock()
 _SAY_PROCESS: subprocess.Popen | None = None

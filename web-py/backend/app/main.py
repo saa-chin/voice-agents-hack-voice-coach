@@ -189,6 +189,14 @@ async def ws_coach(ws: WebSocket) -> None:
             "target_dbfs": d.target_dbfs,
             "total": len(drills_list),
             "position": drill_idx,
+            # Richer context (clinically-grounded program model):
+            "category_id": d.category_id,
+            "category_name": d.category_name,
+            "exercise_id": d.exercise_id,
+            "exercise_name": d.exercise_name,
+            "focus": d.focus,
+            "target_repetitions": d.target_repetitions,
+            "target_duration_sec": d.target_duration_sec,
         })
 
     try:

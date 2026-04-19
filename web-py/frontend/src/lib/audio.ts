@@ -11,6 +11,8 @@
  * path works.
  */
 
+// MUST match cli/coach.py:SR. The Python backend rejects audio at any other
+// sample rate. If you change one, change both.
 const TARGET_SAMPLE_RATE = 16000;
 
 export interface RecorderHandle {

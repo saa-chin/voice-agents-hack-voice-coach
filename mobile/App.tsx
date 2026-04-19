@@ -41,6 +41,9 @@ const WEIGHTS_URL = `https://huggingface.co/Cactus-Compute/gemma-4-E2B-it/resolv
 const VOICE_PROMPT =
   'Transcribe the audio verbatim. Output only the spoken words, exactly as heard. No commentary, no analysis, no extra text.';
 
+// SAMPLE_RATE / sampleRate MUST match cli/coach.py:SR (16000). Gemma 4's
+// audio encoder is trained on 16 kHz mono Int16; any other rate produces
+// silence or garbage. Keep this in sync with the Python canonical source.
 const RECORD_OPTIONS = {
   sampleRate: 16000,
   channels: 1,

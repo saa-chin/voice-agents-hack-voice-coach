@@ -200,8 +200,13 @@ def test_ws_happy_path_first_turn_advance(server):
             drill0 = ws.receive_json()
             assert drill0["type"] == "drill"
             assert drill0["position"] == 0
-            assert drill0["total"] >= 5
+            # vl_1 default exercise has 4 phases (warmup → glide → counting → main_task)
+            assert drill0["total"] >= 4
             assert drill0["stage"] == "warmup"
+            # Richer context fields are now sent on every drill message.
+            assert drill0["exercise_id"] == "vl_1"
+            assert drill0["exercise_name"] == "Sustained Vowel Power"
+            assert drill0["category_id"] == "voice_loudness"
 
             ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
 

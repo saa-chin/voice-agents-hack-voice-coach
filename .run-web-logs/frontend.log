@@ -1,42 +1,13 @@
-22:13:42 [types] Generated 0ms
+22:53:46 [types] Generated 1ms
 
- astro  v4.16.19 ready in 772 ms
+ astro  v4.16.19 ready in 290 ms
 
 ┃ Local    http://127.0.0.1:4321/
 
-22:13:42 watching for file changes...
-22:13:42 [200] / 5ms
-22:13:42 [200] / 2ms
-22:13:53 [200] / 4ms
-22:15:38 [200] / 7ms
-22:15:41 [200] / 5ms
-22:16:02 [200] / 5ms
-22:16:19 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
-22:16:25 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
-22:16:31 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
-22:16:35 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
-22:16:45 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
-22:17:00 [200] / 2ms
-22:17:29 [404] /.well-known/appspecific/com.chrome.devtools.json 2ms
-22:18:18 [watch] src/pages/index.astro
-22:18:19 [200] / 8ms
-22:18:19 [404] /.well-known/appspecific/com.chrome.devtools.json 0ms
-22:18:29 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
-22:30:45 Configuration file updated. Restarting...
-22:30:45 Configuration file updated. Restarting...
-22:30:45 [types] Generated 0ms
-22:30:45 [types] Generated 0ms
-22:30:45 [vite] Port 4321 is in use, trying another one...
-22:30:45 Configuration file updated. Restarting...
-22:30:45 [vite] Port 4321 is in use, trying another one...
-22:30:45 [vite] Port 4322 is in use, trying another one...
-22:30:45 [types] Generated 0ms
-22:30:58 [200] / 3ms
-22:30:59 [404] /.well-known/appspecific/com.chrome.devtools.json 22ms
-22:33:28 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
-22:33:32 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
-22:33:39 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
-22:33:43 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
-22:34:00 [watch] src/lib/audio.test.ts
-22:34:01 [200] / 2ms
-22:34:01 [404] /.well-known/appspecific/com.chrome.devtools.json 0ms
+22:53:46 watching for file changes...
+22:53:47 [200] / 4ms
+22:53:47 [200] / 2ms
+22:53:47 [200] / 9ms
+22:53:58 [200] / 2ms
+22:53:58 [200] / 2ms
+22:54:21 [200] / 4ms

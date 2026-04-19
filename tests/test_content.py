@@ -1,77 +1,289 @@
-"""Coverage for cli/content.py — pure data, but the invariants matter."""
+"""Coverage for cli/content.py — JSON-driven Parkinson's therapy program."""
 from __future__ import annotations
 
 import dataclasses
+import json
+from pathlib import Path
 
 import content
 import pytest
 
 
-def test_drill_is_frozen_dataclass():
-    d = content.Drill("warmup", 0, "Aaaah")
-    assert dataclasses.is_dataclass(d)
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        d.prompt = "mutated"  # type: ignore[misc]
+# ---- Program loading -----------------------------------------------------
+
+class TestProgramLoading:
+    def test_loads_program_from_json(self):
+        prog = content.load_program()
+        assert prog.program_name.startswith("Parkinsons")
+        assert prog.version == "1.0"
+        assert prog.default_flow == ("warmup", "glide", "counting", "main_task")
+
+    def test_program_has_all_four_categories(self):
+        prog = content.load_program()
+        ids = [c.id for c in prog.categories]
+        assert ids == ["voice_loudness", "prosody", "articulation", "functional"]
+
+    def test_voice_loudness_has_five_exercises(self):
+        cat = content.find_category("voice_loudness")
+        assert len(cat.exercises) == 5
+        assert [e.id for e in cat.exercises] == ["vl_1", "vl_2", "vl_3", "vl_4", "vl_5"]
+
+    def test_total_exercise_count(self):
+        prog = content.load_program()
+        total = sum(len(c.exercises) for c in prog.categories)
+        # 5 + 2 + 2 + 3 = 12
+        assert total == 12
+
+    def test_each_exercise_has_all_default_phases(self):
+        prog = content.load_program()
+        for cat in prog.categories:
+            for ex in cat.exercises:
+                phase_names = [p.name for p in ex.phases]
+                assert phase_names == list(prog.default_flow), \
+                    f"{ex.id} has phases {phase_names}"
+
+    def test_load_program_is_cached(self):
+        a = content.load_program()
+        b = content.load_program()
+        assert a is b  # lru_cache
+
+    def test_load_from_alternative_path(self, tmp_path):
+        custom = tmp_path / "tiny.json"
+        custom.write_text(json.dumps({
+            "program_name": "tiny",
+            "version": "0.1",
+            "structure": {"default_flow": ["warmup", "main_task"]},
+            "categories": [{
+                "id": "x",
+                "name": "X",
+                "goal": "test",
+                "exercises": [{
+                    "id": "x_1",
+                    "name": "Test",
+                    "phases": {
+                        "warmup": {"instructions": "breathe"},
+                        "main_task": {"content": ["go"], "instructions": "say it"},
+                    },
+                }],
+            }],
+        }))
+        # Bypass the lru_cache by passing path explicitly.
+        content.load_program.cache_clear()
+        try:
+            prog = content.load_program(custom)
+            assert prog.program_name == "tiny"
+            assert len(prog.categories) == 1
+            assert prog.categories[0].exercises[0].id == "x_1"
+        finally:
+            content.load_program.cache_clear()
 
 
-def test_drill_default_target_dbfs():
-    d = content.Drill("phrase", 1, "Hello")
-    assert d.target_dbfs == -18.0
-    assert d.note == ""
+# ---- Phase content normalisation ----------------------------------------
+
+class TestContentCoercion:
+    def test_string_content_becomes_one_tuple(self):
+        assert content._coerce_content("1 to 10") == ("1 to 10",)
+
+    def test_list_content_becomes_tuple(self):
+        assert content._coerce_content(["a", "b"]) == ("a", "b")
+
+    def test_missing_content_is_empty_tuple(self):
+        assert content._coerce_content(None) == ()
+
+    def test_non_string_in_list_is_stringified(self):
+        assert content._coerce_content([1, 2.5]) == ("1", "2.5")
+
+    def test_non_string_value_stringified(self):
+        assert content._coerce_content(42) == ("42",)
 
 
-def test_warmups_phrases_conversation_nonempty():
-    assert len(content.WARMUPS) >= 3
-    assert len(content.PHRASES) >= 5
-    assert len(content.CONVERSATION) >= 2
+# ---- Drill dataclass ----------------------------------------------------
+
+class TestDrillDataclass:
+    def test_is_frozen(self):
+        d = content.Drill(stage="warmup", index=0, prompt="Ahhh")
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            d.prompt = "mutated"  # type: ignore[misc]
+
+    def test_default_field_values(self):
+        d = content.Drill(stage="warmup", index=0, prompt="Ahhh")
+        assert d.note == ""
+        assert d.target_dbfs == content.DEFAULT_TARGET_DBFS_FALLBACK
+        assert d.category_id == ""
+        assert d.exercise_name == ""
+        assert d.focus == ""
+        assert d.target_repetitions == 0
+        assert d.target_duration_sec == 0
 
 
-def test_default_drill_set_order_warmup_phrase_conversation():
-    drills = content.default_drill_set()
-    stages = [d.stage for d in drills]
-    # stages should appear in this order with no interleaving
-    expected_order = ["warmup", "phrase", "conversation"]
-    seen: list[str] = []
-    for s in stages:
-        if not seen or seen[-1] != s:
-            seen.append(s)
-    assert seen == expected_order, f"unexpected stage ordering: {seen}"
+# ---- Flattening: exercise → drills --------------------------------------
+
+class TestDrillsForExercise:
+    def test_vl_1_flattens_to_four_drills(self):
+        drills = content.drills_for_exercise("vl_1")
+        # warmup + glide + counting + main_task (1 content item) = 4
+        assert len(drills) == 4
+        stages = [d.stage for d in drills]
+        assert stages == ["warmup", "glide", "counting", "main_task"]
+
+    def test_vl_2_unrolls_main_task_content(self):
+        drills = content.drills_for_exercise("vl_2")
+        # warmup + glide + counting + 5 main_task content items = 8
+        assert len(drills) == 8
+        main_tasks = [d for d in drills if d.stage == "main_task"]
+        assert [d.prompt for d in main_tasks] == ["Hey", "Stop", "Hello", "Yes", "No"]
+
+    def test_warmup_drill_uses_instruction_as_prompt(self):
+        drills = content.drills_for_exercise("vl_1")
+        warmup = drills[0]
+        assert warmup.stage == "warmup"
+        # No explicit content → instruction text becomes the prompt.
+        assert "deep diaphragmatic breath" in warmup.prompt
+        assert warmup.note == ""
+
+    def test_main_task_drill_carries_focus(self):
+        drills = content.drills_for_exercise("vl_1")
+        main = next(d for d in drills if d.stage == "main_task")
+        assert main.focus == "Breath control and vocal strength"
+        assert main.target_repetitions == 10
+        assert main.target_duration_sec == 5
+
+    def test_counting_uses_content_as_prompt_with_instruction_as_note(self):
+        drills = content.drills_for_exercise("vl_1")
+        counting = next(d for d in drills if d.stage == "counting")
+        assert counting.prompt == "1 to 10"
+        assert counting.note == "Count loudly and clearly"
+
+    def test_each_drill_has_category_and_exercise_metadata(self):
+        for d in content.drills_for_exercise("vl_1"):
+            assert d.category_id == "voice_loudness"
+            assert d.category_name == "Voice Loudness & Breath Support"
+            assert d.exercise_id == "vl_1"
+            assert d.exercise_name == "Sustained Vowel Power"
+
+    def test_target_dbfs_varies_by_stage(self):
+        drills = content.drills_for_exercise("vl_1")
+        by_stage = {d.stage: d.target_dbfs for d in drills}
+        # main_task should be louder (higher dBFS, less negative) than warmup.
+        assert by_stage["main_task"] > by_stage["warmup"]
+
+    def test_unknown_exercise_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            content.drills_for_exercise("nope_99")
 
 
-def test_default_drill_set_total_count():
-    drills = content.default_drill_set()
-    assert len(drills) == len(content.WARMUPS) + len(content.PHRASES) + len(content.CONVERSATION)
+# ---- drills_for_category ------------------------------------------------
+
+class TestDrillsForCategory:
+    def test_voice_loudness_total_drills(self):
+        drills = content.drills_for_category("voice_loudness")
+        # vl_1: 4, vl_2: 8, vl_3: 6, vl_4: 6, vl_5: 4 → 28
+        assert len(drills) == 28
+
+    def test_articulation_pa_ta_ka_unrolls_correctly(self):
+        drills = content.drills_for_category("articulation")
+        ar1_main = [d for d in drills if d.exercise_id == "ar_1" and d.stage == "main_task"]
+        assert len(ar1_main) == 1
+        assert ar1_main[0].prompt == "Pa-Ta-Ka"
+        assert ar1_main[0].focus == "Tongue and lip coordination"
+
+    def test_functional_word_reading_unrolls_5_words(self):
+        drills = content.drills_for_category("functional")
+        fn1_main = [d for d in drills if d.exercise_id == "fn_1" and d.stage == "main_task"]
+        assert [d.prompt for d in fn1_main] == ["cat", "dog", "sun", "book", "chair"]
+
+    def test_unknown_category_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            content.drills_for_category("nope")
 
 
-def test_every_drill_has_valid_stage():
-    valid_stages = {"warmup", "phrase", "conversation"}
-    for d in content.default_drill_set():
-        assert d.stage in valid_stages, f"invalid stage: {d.stage!r}"
+# ---- default_drill_set --------------------------------------------------
+
+class TestDefaultDrillSet:
+    def test_default_is_first_exercise_of_first_category(self, monkeypatch):
+        monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
+        drills = content.default_drill_set()
+        assert all(d.exercise_id == "vl_1" for d in drills)
+        assert len(drills) == 4
+        assert [d.stage for d in drills] == [
+            "warmup", "glide", "counting", "main_task"
+        ]
+
+    def test_env_override_picks_named_exercise(self, monkeypatch):
+        monkeypatch.setenv("VOICE_COACH_EXERCISE", "ar_1")
+        drills = content.default_drill_set()
+        assert all(d.exercise_id == "ar_1" for d in drills)
+
+    def test_env_override_unknown_raises(self, monkeypatch):
+        monkeypatch.setenv("VOICE_COACH_EXERCISE", "nonexistent")
+        with pytest.raises(KeyError):
+            content.default_drill_set()
+
+    def test_empty_program_resolves_to_empty_drill_set(self, tmp_path, monkeypatch):
+        """Defensive: a program with no categories returns []."""
+        empty = tmp_path / "empty.json"
+        empty.write_text(json.dumps({
+            "program_name": "empty",
+            "version": "0.0",
+            "structure": {"default_flow": []},
+            "categories": [],
+        }))
+        monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
+        # Force the lru_cache to re-load with the empty program.
+        content.load_program.cache_clear()
+        original_path = content.PROGRAM_JSON_PATH
+        try:
+            monkeypatch.setattr(content, "PROGRAM_JSON_PATH", empty)
+            assert content._resolve_default_exercise_id() == ""
+            assert content.default_drill_set() == []
+        finally:
+            monkeypatch.setattr(content, "PROGRAM_JSON_PATH", original_path)
+            content.load_program.cache_clear()
 
 
-def test_every_drill_has_nonempty_prompt():
-    for d in content.default_drill_set():
-        assert d.prompt.strip(), f"empty prompt for {d!r}"
+# ---- all_exercises + find_exercise --------------------------------------
+
+class TestQueryHelpers:
+    def test_all_exercises_returns_all_pairs(self):
+        pairs = content.all_exercises()
+        assert len(pairs) == 12
+        for cat, ex in pairs:
+            assert isinstance(cat, content.Category)
+            assert isinstance(ex, content.Exercise)
+
+    def test_find_exercise_returns_correct_pair(self):
+        cat, ex = content.find_exercise("pr_2")
+        assert cat.id == "prosody"
+        assert ex.name == "Emotion Expression"
+
+    def test_find_exercise_unknown_raises(self):
+        with pytest.raises(KeyError):
+            content.find_exercise("nope")
+
+    def test_find_category_unknown_raises(self):
+        with pytest.raises(KeyError):
+            content.find_category("nope")
 
 
-def test_indexes_are_zero_based_within_stage():
-    by_stage: dict[str, list[content.Drill]] = {}
-    for d in content.default_drill_set():
-        by_stage.setdefault(d.stage, []).append(d)
-    for stage, drills in by_stage.items():
-        indexes = [d.index for d in drills]
-        assert indexes == list(range(len(drills))), \
-            f"{stage} indexes not 0-based: {indexes}"
+# ---- Invariants across the whole program -------------------------------
 
+class TestProgramInvariants:
+    def test_every_exercise_id_unique(self):
+        ids = [ex.id for _, ex in content.all_exercises()]
+        assert len(ids) == len(set(ids)), f"duplicate exercise ids: {ids}"
 
-def test_target_dbfs_is_reasonable():
-    """dBFS targets must be negative (full-scale digital is 0 dBFS)
-    and not so quiet they're meaningless."""
-    for d in content.default_drill_set():
-        assert -40.0 <= d.target_dbfs <= 0.0, f"bad target {d.target_dbfs} on {d.prompt!r}"
+    def test_every_drill_has_valid_stage(self):
+        for _, ex in content.all_exercises():
+            for d in content.drills_for_exercise(ex.id):
+                assert d.stage in content.VALID_STAGES, \
+                    f"invalid stage {d.stage!r} on {d}"
 
+    def test_every_drill_has_nonempty_prompt(self):
+        for _, ex in content.all_exercises():
+            for d in content.drills_for_exercise(ex.id):
+                assert d.prompt.strip(), f"empty prompt: {d}"
 
-def test_warmups_have_notes():
-    """Warm-up vowels need coaching notes for clinical clarity."""
-    for d in content.WARMUPS:
-        assert d.note, f"warmup {d.prompt!r} missing note"
+    def test_target_dbfs_is_reasonable(self):
+        for _, ex in content.all_exercises():
+            for d in content.drills_for_exercise(ex.id):
+                assert -40.0 <= d.target_dbfs <= 0.0
