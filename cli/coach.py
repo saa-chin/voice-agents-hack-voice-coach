@@ -98,15 +98,17 @@ def build_prompt(drill: Drill, achieved_dbfs: float, duration_s: float) -> str:
     )
 
 
-def parse_coach_json(raw: str) -> dict[str, Any] | None:
-    """Extract the first balanced {...} object from `raw`.
+_CACTUS_ENVELOPE_KEYS = {"success", "response"}
+
+
+def _extract_first_json_object(text: str) -> dict[str, Any] | None:
+    """Find the first balanced {...} in `text` and json.loads it.
 
     Tolerates markdown fences and small amounts of leading/trailing prose.
-    Returns None if no valid JSON object is found.
     """
-    if not raw:
+    if not text:
         return None
-    cleaned = re.sub(r"```(?:json)?", "", raw).strip("` \n\t")
+    cleaned = re.sub(r"```(?:json)?", "", text).strip("` \n\t")
     start = cleaned.find("{")
     if start < 0:
         return None
@@ -125,6 +127,34 @@ def parse_coach_json(raw: str) -> dict[str, Any] | None:
                     log.warning("JSON parse failed: %s; blob=%r", exc, blob[:200])
                     return None
     return None
+
+
+def parse_coach_json(raw: str) -> dict[str, Any] | None:
+    """Extract the coach JSON from a model reply.
+
+    Handles two wire formats:
+      1. Bare JSON object (what we ask for in the prompt).
+      2. Cactus envelope: {"success": .., "response": "<inner JSON string>"}
+         — what `cactus_complete` writes into its output buffer when the
+         caller reads the buffer directly instead of streaming tokens.
+
+    Returns None if neither yields a usable object.
+    """
+    obj = _extract_first_json_object(raw)
+    if obj is None:
+        return None
+    # Unwrap Cactus envelope if present and our schema keys are not at top level.
+    if (
+        isinstance(obj, dict)
+        and _CACTUS_ENVELOPE_KEYS.issubset(obj)
+        and "ack" not in obj
+        and isinstance(obj.get("response"), str)
+    ):
+        log.debug("unwrapping Cactus envelope")
+        inner = _extract_first_json_object(obj["response"])
+        if inner is not None:
+            return inner
+    return obj
 
 
 def validate_coach_json(obj: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -265,9 +295,26 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 # --- Coach loop -----------------------------------------------------------
 
-def _noop_token(_text: str, _tid: int) -> None:
-    """Discard streamed tokens — coach mode wants the full JSON, not a stream."""
-    pass
+class _TokenCollector:
+    """Accumulate streamed tokens into a single string.
+
+    `cactus_complete` writes a Cactus-envelope JSON into its output buffer
+    ({"success", "response": "<inner>"}) but streams ONLY the inner response
+    text through the per-token callback. Collecting via callback gives us
+    the model's reply directly with no envelope to unwrap.
+    """
+
+    __slots__ = ("parts",)
+
+    def __init__(self) -> None:
+        self.parts: list[str] = []
+
+    def __call__(self, text: str, _tid: int) -> None:
+        if text:
+            self.parts.append(text)
+
+    def text(self) -> str:
+        return "".join(self.parts)
 
 
 def coach_mode(
@@ -377,14 +424,15 @@ def coach_mode(
                 "drill=%s/%d sending %d audio bytes (%.2fs)",
                 drill.stage, drill.index, len(pcm), duration,
             )
+            collector = _TokenCollector()
             t0 = time.monotonic()
             try:
-                raw = cactus_complete_audio(
+                envelope = cactus_complete_audio(
                     cactus_module, model,
                     json.dumps(messages),
                     options,
                     pcm,
-                    _noop_token,
+                    collector,
                 )
             except Exception as exc:
                 log.error("model call failed on %s/%d: %s", drill.stage, drill.index, exc)
@@ -402,9 +450,16 @@ def coach_mode(
                 continue
 
             latency = time.monotonic() - t0
-            log.debug("model latency %.2fs raw=%r", latency, raw[:200])
+            streamed = collector.text()
+            # Prefer the streamed callback text (it's just the model reply);
+            # fall back to the envelope buffer if streaming was empty.
+            raw_for_parse = streamed or envelope
+            log.debug(
+                "model latency %.2fs streamed=%dB envelope=%dB sample=%r",
+                latency, len(streamed), len(envelope), raw_for_parse[:200],
+            )
 
-            valid = validate_coach_json(parse_coach_json(raw))
+            valid = validate_coach_json(parse_coach_json(raw_for_parse))
             if not valid:
                 json_failures += 1
                 print("   (model produced invalid JSON — moving on)")
@@ -414,7 +469,8 @@ def coach_mode(
                     "achieved_dbfs": dbfs,
                     "duration_s": duration,
                     "model_latency_s": round(latency, 3),
-                    "raw_reply": raw,
+                    "streamed_reply": streamed,
+                    "envelope_reply": envelope,
                     "parse_error": True,
                 })
                 i += 1
