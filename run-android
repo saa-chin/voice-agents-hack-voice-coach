@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# run-android — one-shot script to build & launch the AIVoiceCoach RN app on a
+# connected Android phone (or running emulator).
+#
+# Usage:
+#   ./run-android                 # auto-detect device, build & run
+#   ./run-android --list          # list connected Android devices and exit
+#   ./run-android --device "ID"   # target a specific device by adb serial
+#   ./run-android --release       # build the Release variant
+#   ./run-android --clean         # ./gradlew clean + nuke node_modules
+#   ./run-android --skip-install  # skip `npm install`
+#   ./run-android -h | --help     # show this help
+#
+# The script does everything end-to-end: tool checks, JDK/SDK sanity, dep
+# install, adb device detection, reverse-tethering port 8081 for Metro, and
+# finally `react-native run-android`. Any failure is reported with a clear,
+# actionable error message.
+
+set -u
+set -o pipefail
+
+# ---------- pretty output ----------------------------------------------------
+if [[ -t 1 ]]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GRN=$'\033[32m'
+  YLW=$'\033[33m'; BLU=$'\033[34m'; CYN=$'\033[36m'; RST=$'\033[0m'
+else
+  BOLD=""; DIM=""; RED=""; GRN=""; YLW=""; BLU=""; CYN=""; RST=""
+fi
+
+step()  { printf "\n${BOLD}${BLU}==>${RST} ${BOLD}%s${RST}\n" "$*"; }
+info()  { printf "    ${DIM}%s${RST}\n" "$*"; }
+ok()    { printf "    ${GRN}✓${RST} %s\n" "$*"; }
+warn()  { printf "    ${YLW}!${RST} %s\n" "$*"; }
+die() {
+  printf "\n${BOLD}${RED}✗ %s${RST}\n" "$1" >&2
+  shift || true
+  for line in "$@"; do
+    printf "  ${DIM}→${RST} %s\n" "$line" >&2
+  done
+  printf "\n"
+  exit 1
+}
+
+# ---------- arg parsing ------------------------------------------------------
+LIST_ONLY=0
+CLEAN=0
+SKIP_INSTALL=0
+VARIANT="debug"
+DEVICE=""
+
+show_help() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)       show_help ;;
+    --list)          LIST_ONLY=1; shift ;;
+    --clean)         CLEAN=1; shift ;;
+    --skip-install)  SKIP_INSTALL=1; shift ;;
+    --release)       VARIANT="release"; shift ;;
+    --device)
+      [[ $# -ge 2 ]] || die "--device requires a value (adb serial)"
+      DEVICE="$2"; shift 2 ;;
+    --device=*)      DEVICE="${1#*=}"; shift ;;
+    *) die "Unknown argument: $1" "Run './run-android --help' to see usage." ;;
+  esac
+done
+
+# ---------- locate repo & mobile dir ----------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MOBILE_DIR="$SCRIPT_DIR/mobile"
+ANDROID_DIR="$MOBILE_DIR/android"
+
+[[ -d "$MOBILE_DIR"  ]] || die "Could not find 'mobile/' directory next to run-android" \
+  "Expected at: $MOBILE_DIR" \
+  "Run this script from the repo root, or move it back next to mobile/."
+[[ -d "$ANDROID_DIR" ]] || die "Could not find 'mobile/android/' directory" \
+  "Expected at: $ANDROID_DIR"
+[[ -f "$MOBILE_DIR/package.json" ]] || die "mobile/package.json missing — is this the right repo?"
+
+# ---------- step 1: tool checks ---------------------------------------------
+step "Checking required tools"
+
+require_cmd() {
+  local cmd="$1"; shift
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    die "Missing required tool: '$cmd'" "$@"
+  fi
+  ok "$cmd → $(command -v "$cmd")"
+}
+
+require_cmd node \
+  "Install Node.js >= 22.11 (e.g. 'brew install node' or use nvm)."
+require_cmd npm \
+  "npm should ship with Node.js — reinstall Node."
+require_cmd java \
+  "Install a JDK (17 recommended for RN 0.85):" \
+  "  brew install --cask zulu@17     (macOS, recommended)" \
+  "  Then: export JAVA_HOME=\$(/usr/libexec/java_home -v 17)"
+
+# Locate Android SDK
+if [[ -z "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
+  if [[ -d "$HOME/Library/Android/sdk" ]]; then
+    export ANDROID_HOME="$HOME/Library/Android/sdk"
+    info "ANDROID_HOME not set — defaulting to $ANDROID_HOME"
+  elif [[ -d "$HOME/Android/Sdk" ]]; then
+    export ANDROID_HOME="$HOME/Android/Sdk"
+    info "ANDROID_HOME not set — defaulting to $ANDROID_HOME"
+  else
+    die "Android SDK not found." \
+        "Install Android Studio (https://developer.android.com/studio), open it once" \
+        "to install the SDK, then add to your shell:" \
+        "  export ANDROID_HOME=\"\$HOME/Library/Android/sdk\"   # macOS" \
+        "  export PATH=\"\$PATH:\$ANDROID_HOME/platform-tools:\$ANDROID_HOME/emulator\""
+  fi
+fi
+ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+[[ -d "$ANDROID_HOME" ]] || die "ANDROID_HOME points to a non-existent path: $ANDROID_HOME"
+ok "Android SDK: $ANDROID_HOME"
+
+# Make sure adb is on PATH (or in the SDK)
+if ! command -v adb >/dev/null 2>&1; then
+  if [[ -x "$ANDROID_HOME/platform-tools/adb" ]]; then
+    export PATH="$ANDROID_HOME/platform-tools:$PATH"
+  else
+    die "adb not found." \
+        "Install platform-tools via Android Studio (SDK Manager), or:" \
+        "  brew install --cask android-platform-tools"
+  fi
+fi
+ok "adb → $(command -v adb)"
+
+# Java version check (RN 0.85 wants JDK 17+)
+JAVA_MAJOR="$(java -version 2>&1 | awk -F\" '/version/ {split($2,a,"."); print (a[1]=="1"?a[2]:a[1]); exit}')"
+if [[ -n "$JAVA_MAJOR" ]] && (( JAVA_MAJOR < 17 )); then
+  warn "Java $JAVA_MAJOR detected; RN 0.85 expects JDK 17+. Build may fail."
+  warn "Set JAVA_HOME to a JDK 17:  export JAVA_HOME=\$(/usr/libexec/java_home -v 17)"
+fi
+
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+if (( NODE_MAJOR < 22 )); then
+  warn "Node $(node -v) detected; package.json wants >= 22.11. Build may fail."
+fi
+
+# Gradle wrapper must exist and be executable
+if [[ ! -x "$ANDROID_DIR/gradlew" ]]; then
+  if [[ -f "$ANDROID_DIR/gradlew" ]]; then
+    chmod +x "$ANDROID_DIR/gradlew"
+    info "Made mobile/android/gradlew executable."
+  else
+    die "Gradle wrapper missing: mobile/android/gradlew" \
+        "This usually means the repo wasn't cloned correctly."
+  fi
+fi
+ok "Gradle wrapper present."
+
+# ---------- step 2: device discovery ----------------------------------------
+step "Looking for connected Android device(s)"
+
+# Kick adb in case it's not running yet (silent on success).
+adb start-server >/dev/null 2>&1 || true
+
+# Parse `adb devices -l` — skip the header and offline/unauthorized states.
+# (Avoid `mapfile`; macOS ships Bash 3.2.)
+ONLINE_DEVICES=()
+PROBLEM_DEVICES=()
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  serial="$(awk '{print $1}' <<<"$line")"
+  state="$(awk '{print $2}' <<<"$line")"
+  [[ -z "$serial" ]] && continue
+  case "$state" in
+    device)        ONLINE_DEVICES+=("$line") ;;
+    offline|unauthorized|no|recovery|sideload|bootloader)
+      PROBLEM_DEVICES+=("$line") ;;
+    *)             PROBLEM_DEVICES+=("$line") ;;
+  esac
+done < <(adb devices -l 2>/dev/null | awk 'NR>1 && NF>0 {print}')
+
+if [[ "$LIST_ONLY" -eq 1 ]]; then
+  if (( ${#ONLINE_DEVICES[@]} > 0 )); then
+    info "Online devices:"
+    for d in "${ONLINE_DEVICES[@]}"; do printf '      %s\n' "$d"; done
+  else
+    warn "No online Android devices."
+  fi
+  if (( ${#PROBLEM_DEVICES[@]} > 0 )); then
+    info "Detected but not usable:"
+    for d in "${PROBLEM_DEVICES[@]}"; do printf '      %s\n' "$d"; done
+  fi
+  exit 0
+fi
+
+if (( ${#ONLINE_DEVICES[@]} == 0 )); then
+  hints=(
+    "Checklist:"
+    "  • Plug your Android phone in with a data-capable USB cable."
+    "  • On the phone: enable Developer Options (tap Build Number 7×)."
+    "  • Then enable USB Debugging in Developer Options."
+    "  • Unlock the phone and tap 'Allow' on the RSA fingerprint prompt."
+    "  • Or start an emulator: \$ANDROID_HOME/emulator/emulator -list-avds"
+    "Then re-run:  ./run-android"
+  )
+  if (( ${#PROBLEM_DEVICES[@]} > 0 )); then
+    hints+=( "" "adb sees these but they aren't usable yet:" )
+    for d in "${PROBLEM_DEVICES[@]}"; do hints+=( "  • $d" ); done
+    hints+=( "" "If a device is 'unauthorized', accept the prompt on the phone." )
+    hints+=( "If 'offline', try:  adb kill-server && adb start-server" )
+  fi
+  die "No usable Android device detected." "${hints[@]}"
+fi
+
+if [[ -z "$DEVICE" ]]; then
+  if (( ${#ONLINE_DEVICES[@]} > 1 )); then
+    info "Multiple devices online:"
+    for d in "${ONLINE_DEVICES[@]}"; do printf '      %s\n' "$d"; done
+    die "More than one Android device is connected." \
+        "Pick one with:  ./run-android --device \"<adb serial>\"" \
+        "Or list them with:  ./run-android --list"
+  fi
+  DEVICE="$(awk '{print $1}' <<<"${ONLINE_DEVICES[0]}")"
+fi
+
+ok "Target device: ${BOLD}${DEVICE}${RST}"
+
+# ---------- step 3: optional clean ------------------------------------------
+if [[ "$CLEAN" -eq 1 ]]; then
+  step "Cleaning previous build artifacts"
+  ( cd "$ANDROID_DIR" && ./gradlew clean ) \
+    || die "gradle clean failed."
+  rm -rf "$MOBILE_DIR/node_modules"
+  ok "Cleaned Gradle build + removed node_modules/."
+  SKIP_INSTALL=0
+fi
+
+# ---------- step 4: npm install ---------------------------------------------
+if [[ "$SKIP_INSTALL" -eq 1 ]]; then
+  step "Skipping npm install (--skip-install)"
+elif [[ ! -d "$MOBILE_DIR/node_modules" ]] || \
+     [[ "$MOBILE_DIR/package.json" -nt "$MOBILE_DIR/node_modules" ]]; then
+  step "Installing JS dependencies (npm install)"
+  ( cd "$MOBILE_DIR" && npm install ) \
+    || die "npm install failed." \
+           "Try:  cd mobile && rm -rf node_modules package-lock.json && npm install"
+  ok "JS deps installed."
+else
+  step "JS dependencies already up to date"
+  ok "Skipping npm install (node_modules looks fresh)."
+fi
+
+# ---------- step 5: reverse-tether Metro port -------------------------------
+# This makes the device's localhost:8081 point at the dev machine, so the JS
+# bundle download "just works" over USB without messing with IPs.
+step "Reverse-tethering Metro port 8081"
+if adb -s "$DEVICE" reverse tcp:8081 tcp:8081 >/dev/null 2>&1; then
+  ok "adb reverse tcp:8081 → tcp:8081"
+else
+  warn "Couldn't set adb reverse (emulator? release build?). Continuing anyway."
+fi
+
+# ---------- step 6: build & launch ------------------------------------------
+step "Building and launching on '$DEVICE' ($VARIANT)"
+info "This will start Metro in a new window if it isn't already running."
+
+RN_ARGS=( --deviceId "$DEVICE" --mode "$VARIANT" )
+
+if ! ( cd "$MOBILE_DIR" && npx react-native run-android "${RN_ARGS[@]}" ); then
+  die "Build/launch failed." \
+      "Common fixes:" \
+      "  • Make sure JDK 17 is active:  export JAVA_HOME=\$(/usr/libexec/java_home -v 17)" \
+      "  • Open mobile/android in Android Studio once so Gradle can sync." \
+      "  • Run with --clean to nuke caches:  ./run-android --clean" \
+      "  • Re-check device:  ./run-android --list" \
+      "  • If signing fails on --release, configure a release keystore in mobile/android/app."
+fi
+
+step "Done"
+ok "App should now be running on '$DEVICE'."
+info "If the screen is blank, make sure Metro is running: cd mobile && npm start"
+info "Reload the app: shake the device, or run: adb -s $DEVICE shell input keyevent 82"

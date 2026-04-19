@@ -47,6 +47,50 @@ Prizes per special track:
 - Step 9: Obtain Gemini API key from [Google AI Studio](https://aistudio.google.com/api-keys) (if using cloud fallback) 
 - Step 10: `export GEMINI_API_KEY="your-key"` (if using cloud fallback) 
 
+## Run on a phone
+Two one-shot scripts at the repo root build the React Native app and launch it on a connected device. Both handle tool checks, dep install, device detection, and the build, and fail with clear, actionable messages.
+
+### iPhone
+
+```sh
+./run-ios
+```
+
+Flags:
+- `./run-ios --list` — show connected (and known-offline) iOS devices
+- `./run-ios --device "iPhone"` — pick a device by name or UDID when more than one is plugged in
+- `./run-ios --release` — build the Release configuration
+- `./run-ios --clean` — wipe `build/`, `Pods/`, `node_modules/`, and DerivedData first
+- `./run-ios --skip-pods` / `--skip-install` — skip pod or npm install
+- `./run-ios --help` — full usage
+
+First-time iPhone checklist (the script will remind you of these on failure):
+1. Plug the iPhone into the Mac with a data cable, unlock it, tap "Trust This Computer".
+2. Enable Developer Mode: Settings → Privacy & Security → Developer Mode.
+3. Open `mobile/ios/AIVoiceCoach.xcworkspace` in Xcode once and pick a Team under Signing & Capabilities.
+4. After the first install, on the iPhone trust the developer cert: Settings → General → VPN & Device Management.
+
+### Android
+
+```sh
+./run-android
+```
+
+Flags:
+- `./run-android --list` — show online and unauthorized/offline Android devices
+- `./run-android --device "<adb serial>"` — pick a device when more than one is connected
+- `./run-android --release` — build the Release variant
+- `./run-android --clean` — `./gradlew clean` and remove `node_modules/`
+- `./run-android --skip-install` — skip npm install
+- `./run-android --help` — full usage
+
+First-time Android checklist (the script will remind you of these on failure):
+1. Install Android Studio once so the SDK + platform-tools are present (the script auto-detects `~/Library/Android/sdk` on macOS or `~/Android/Sdk` on Linux).
+2. Use JDK 17 (RN 0.85): `export JAVA_HOME=$(/usr/libexec/java_home -v 17)`.
+3. On the phone: tap Build Number 7× to unlock Developer Options, then enable USB Debugging.
+4. Plug in over a data cable, unlock the phone, and tap "Allow" on the RSA fingerprint prompt.
+5. The script auto-runs `adb reverse tcp:8081 tcp:8081` so Metro reaches the device over USB.
+
 ## Next steps
 1. Read Cactus docs carefully: [Link](https://docs.cactuscompute.com/latest/)
 2. Read Gemma 4 on Cactus walkthrough carefully: [Link](https://docs.cactuscompute.com/latest/blog/gemma4/)

@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+# run-ios — one-shot script to build & launch the AIVoiceCoach RN app on a
+# physically connected iPhone.
+#
+# Usage:
+#   ./run-ios                 # auto-detect device, build & run
+#   ./run-ios --list          # list connected iOS devices and exit
+#   ./run-ios --device "Name" # target a specific device by name or UDID
+#   ./run-ios --release       # build the Release configuration
+#   ./run-ios --clean         # nuke build/, Pods/, and DerivedData first
+#   ./run-ios --skip-pods     # skip `pod install`
+#   ./run-ios --skip-install  # skip `npm install`
+#   ./run-ios -h | --help     # show this help
+#
+# The script does everything end-to-end: tool checks, dep install, pod install,
+# device detection, and finally `react-native run-ios --device`. Any failure
+# is reported with a clear, actionable error message.
+
+set -u
+set -o pipefail
+
+# ---------- pretty output ----------------------------------------------------
+if [[ -t 1 ]]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GRN=$'\033[32m'
+  YLW=$'\033[33m'; BLU=$'\033[34m'; CYN=$'\033[36m'; RST=$'\033[0m'
+else
+  BOLD=""; DIM=""; RED=""; GRN=""; YLW=""; BLU=""; CYN=""; RST=""
+fi
+
+step()  { printf "\n${BOLD}${BLU}==>${RST} ${BOLD}%s${RST}\n" "$*"; }
+info()  { printf "    ${DIM}%s${RST}\n" "$*"; }
+ok()    { printf "    ${GRN}✓${RST} %s\n" "$*"; }
+warn()  { printf "    ${YLW}!${RST} %s\n" "$*"; }
+die() {
+  printf "\n${BOLD}${RED}✗ %s${RST}\n" "$1" >&2
+  shift || true
+  for line in "$@"; do
+    printf "  ${DIM}→${RST} %s\n" "$line" >&2
+  done
+  printf "\n"
+  exit 1
+}
+
+# ---------- arg parsing ------------------------------------------------------
+LIST_ONLY=0
+CLEAN=0
+SKIP_PODS=0
+SKIP_INSTALL=0
+CONFIG="Debug"
+DEVICE=""
+
+show_help() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)        show_help ;;
+    --list)           LIST_ONLY=1; shift ;;
+    --clean)          CLEAN=1; shift ;;
+    --skip-pods)      SKIP_PODS=1; shift ;;
+    --skip-install)   SKIP_INSTALL=1; shift ;;
+    --release)        CONFIG="Release"; shift ;;
+    --device)
+      [[ $# -ge 2 ]] || die "--device requires a value (device name or UDID)"
+      DEVICE="$2"; shift 2 ;;
+    --device=*)       DEVICE="${1#*=}"; shift ;;
+    *) die "Unknown argument: $1" "Run './run-ios --help' to see usage." ;;
+  esac
+done
+
+# ---------- locate repo & mobile dir ----------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MOBILE_DIR="$SCRIPT_DIR/mobile"
+IOS_DIR="$MOBILE_DIR/ios"
+
+[[ -d "$MOBILE_DIR" ]] || die "Could not find 'mobile/' directory next to run-ios" \
+  "Expected at: $MOBILE_DIR" \
+  "Run this script from the repo root, or move it back next to mobile/."
+[[ -d "$IOS_DIR"    ]] || die "Could not find 'mobile/ios/' directory" \
+  "Expected at: $IOS_DIR"
+[[ -f "$MOBILE_DIR/package.json" ]] || die "mobile/package.json missing — is this the right repo?"
+
+# ---------- platform check ---------------------------------------------------
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  die "iOS builds require macOS." \
+      "You are on: $(uname -s). Run this on a Mac with Xcode installed."
+fi
+
+# ---------- step 1: tool checks ---------------------------------------------
+step "Checking required tools"
+
+require_cmd() {
+  local cmd="$1"; shift
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    die "Missing required tool: '$cmd'" "$@"
+  fi
+  ok "$cmd → $(command -v "$cmd")"
+}
+
+require_cmd node \
+  "Install Node.js >= 22.11 (e.g. 'brew install node' or use nvm)."
+require_cmd npm \
+  "npm should ship with Node.js — reinstall Node."
+require_cmd xcodebuild \
+  "Install Xcode from the Mac App Store, then run:" \
+  "  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer" \
+  "  sudo xcodebuild -runFirstLaunch"
+require_cmd xcrun \
+  "xcrun ships with Xcode — install Xcode."
+require_cmd pod \
+  "Install CocoaPods:  sudo gem install cocoapods   (or 'brew install cocoapods')"
+
+# Check that xcode-select points at a real Xcode (not just CLT)
+XC_PATH="$(xcode-select -p 2>/dev/null || true)"
+if [[ -z "$XC_PATH" || "$XC_PATH" != *"Xcode"* ]]; then
+  die "xcode-select is not pointing at a full Xcode install." \
+      "Currently: ${XC_PATH:-<unset>}" \
+      "Fix: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
+fi
+ok "Xcode at: $XC_PATH"
+
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+if (( NODE_MAJOR < 22 )); then
+  warn "Node $(node -v) detected; package.json wants >= 22.11. Build may fail."
+fi
+
+# ---------- step 2: device discovery ----------------------------------------
+step "Looking for connected iPhone(s)"
+
+# `xcrun xcdevice list` is what the React Native CLI itself uses and is the
+# canonical source of truth for physical iOS devices. (Note: `xctrace list
+# devices` is unreliable — it often reports plugged-in iPhones under
+# "Devices Offline" even when they're fully usable.)
+require_cmd python3 \
+  "python3 ships with macOS / Xcode CLT — try: xcode-select --install"
+
+XCDEVICE_JSON="$(xcrun xcdevice list 2>/dev/null || true)"
+if [[ -z "$XCDEVICE_JSON" || "$XCDEVICE_JSON" == "[]" ]]; then
+  die "Could not query devices via 'xcrun xcdevice list'." \
+      "Try: sudo xcodebuild -runFirstLaunch" \
+      "Or: open Xcode once to finish setup."
+fi
+
+# Print one TSV row per physical iOS device:
+#   <available>\t<name>\t<udid>\t<error-or-empty>
+parse_ios_devices() {
+  XCDEVICE_JSON="$XCDEVICE_JSON" python3 - <<'PY'
+import json, os, sys
+data = json.loads(os.environ["XCDEVICE_JSON"])
+for d in data:
+    if d.get("simulator"): continue
+    if d.get("platform") != "com.apple.platform.iphoneos": continue
+    name = d.get("name", "iPhone")
+    udid = d.get("identifier", "")
+    avail = "1" if d.get("available") else "0"
+    err = d.get("error") or {}
+    err_desc = err.get("description") or err.get("failureReason") or ""
+    print("\t".join([avail, name, udid, err_desc]))
+PY
+}
+
+IOS_TSV="$(parse_ios_devices)"
+
+ONLINE_IOS=""
+OFFLINE_IOS=""
+while IFS=$'\t' read -r avail name udid err; do
+  [[ -z "$udid" ]] && continue
+  if [[ "$avail" == "1" ]]; then
+    ONLINE_IOS+="${name} (${udid})"$'\n'
+  else
+    if [[ -n "$err" ]]; then
+      OFFLINE_IOS+="${name} (${udid}) — ${err}"$'\n'
+    else
+      OFFLINE_IOS+="${name} (${udid})"$'\n'
+    fi
+  fi
+done <<<"$IOS_TSV"
+
+ONLINE_IOS="${ONLINE_IOS%$'\n'}"
+OFFLINE_IOS="${OFFLINE_IOS%$'\n'}"
+
+if [[ "$LIST_ONLY" -eq 1 ]]; then
+  if [[ -n "$ONLINE_IOS" ]]; then
+    info "Connected iOS devices:"
+    printf '%s\n' "$ONLINE_IOS" | sed 's/^/      /'
+  else
+    warn "No iOS devices currently connected."
+  fi
+  if [[ -n "$OFFLINE_IOS" ]]; then
+    info "Detected but unavailable:"
+    printf '%s\n' "$OFFLINE_IOS" | sed 's/^/      /'
+  fi
+  exit 0
+fi
+
+DEVICE_COUNT="$(printf '%s\n' "$ONLINE_IOS" | grep -c '[^[:space:]]' || true)"
+
+if [[ "$DEVICE_COUNT" -eq 0 ]]; then
+  hints=(
+    "Checklist:"
+    "  • Plug your iPhone into the Mac with a data-capable cable."
+    "  • Unlock the phone and tap 'Trust This Computer' if prompted."
+    "  • In Settings → Privacy & Security → Developer Mode, enable Developer Mode."
+    "  • Open Xcode once so it can finish first-launch setup."
+    "Then re-run:  ./run-ios"
+  )
+  if [[ -n "$OFFLINE_IOS" ]]; then
+    hints+=( "" "Xcode sees these but they aren't available — usually means" )
+    hints+=( "the phone is locked, untrusted, or Developer Mode is off:" )
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && hints+=( "  • $line" )
+    done <<<"$OFFLINE_IOS"
+  fi
+  die "No connected iPhone detected." "${hints[@]}"
+fi
+
+if [[ -z "$DEVICE" ]]; then
+  if [[ "$DEVICE_COUNT" -gt 1 ]]; then
+    info "Multiple devices found:"
+    printf '%s\n' "$ONLINE_IOS" | sed 's/^/      /'
+    die "More than one iPhone is connected." \
+        "Pick one with:  ./run-ios --device \"<name or UDID>\"" \
+        "Or list them with:  ./run-ios --list"
+  fi
+  # Single device: extract its UDID (more reliable than the name).
+  DEVICE="$(printf '%s\n' "$ONLINE_IOS" | head -n1 \
+    | sed -E 's/.*\(([0-9A-Fa-f-]+)\)[[:space:]]*$/\1/')"
+fi
+
+ok "Target device: ${BOLD}${DEVICE}${RST}"
+
+# ---------- step 3: optional clean ------------------------------------------
+if [[ "$CLEAN" -eq 1 ]]; then
+  step "Cleaning previous build artifacts"
+  rm -rf "$IOS_DIR/build" "$IOS_DIR/Pods" "$IOS_DIR/Podfile.lock" \
+         "$MOBILE_DIR/node_modules"
+  rm -rf "$HOME/Library/Developer/Xcode/DerivedData/AIVoiceCoach-"*
+  ok "Removed build/, Pods/, node_modules/, DerivedData."
+  SKIP_PODS=0
+  SKIP_INSTALL=0
+fi
+
+# ---------- step 4: npm install ---------------------------------------------
+if [[ "$SKIP_INSTALL" -eq 1 ]]; then
+  step "Skipping npm install (--skip-install)"
+elif [[ ! -d "$MOBILE_DIR/node_modules" ]] || \
+     [[ "$MOBILE_DIR/package.json" -nt "$MOBILE_DIR/node_modules" ]]; then
+  step "Installing JS dependencies (npm install)"
+  ( cd "$MOBILE_DIR" && npm install ) \
+    || die "npm install failed." \
+           "Try:  cd mobile && rm -rf node_modules package-lock.json && npm install"
+  ok "JS deps installed."
+else
+  step "JS dependencies already up to date"
+  ok "Skipping npm install (node_modules looks fresh)."
+fi
+
+# ---------- step 5: pod install ---------------------------------------------
+if [[ "$SKIP_PODS" -eq 1 ]]; then
+  step "Skipping CocoaPods install (--skip-pods)"
+elif [[ ! -d "$IOS_DIR/Pods" ]] || \
+     [[ "$IOS_DIR/Podfile" -nt "$IOS_DIR/Pods" ]] || \
+     [[ "$IOS_DIR/Podfile.lock" -nt "$IOS_DIR/Pods" ]]; then
+  step "Installing CocoaPods (pod install)"
+  ( cd "$IOS_DIR" && pod install ) \
+    || die "pod install failed." \
+           "Try:  cd mobile/ios && pod repo update && pod install" \
+           "Or:   cd mobile/ios && rm -rf Pods Podfile.lock && pod install"
+  ok "Pods installed."
+else
+  step "CocoaPods already up to date"
+  ok "Skipping pod install (Pods/ looks fresh)."
+fi
+
+# ---------- step 6: build & launch ------------------------------------------
+step "Building and launching on '$DEVICE' ($CONFIG)"
+info "This will start Metro in a new window if it isn't already running."
+
+RN_ARGS=( --device "$DEVICE" --mode "$CONFIG" )
+
+# react-native CLI exits non-zero on any build/launch failure.
+if ! ( cd "$MOBILE_DIR" && npx react-native run-ios "${RN_ARGS[@]}" ); then
+  die "Build/launch failed." \
+      "Common fixes:" \
+      "  • Open mobile/ios/AIVoiceCoach.xcworkspace in Xcode and pick a Team under Signing & Capabilities." \
+      "  • On the iPhone, trust the developer cert: Settings → General → VPN & Device Management." \
+      "  • Run with --clean to nuke caches:  ./run-ios --clean" \
+      "  • Re-check device:  ./run-ios --list"
+fi
+
+step "Done"
+ok "App should now be running on '$DEVICE'."
+info "If the screen is blank, make sure Metro is running: cd mobile && npm start"
