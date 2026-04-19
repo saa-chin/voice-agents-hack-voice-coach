@@ -17,6 +17,16 @@ import CoachApp from '../components/CoachApp';
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   </head>
   <body>
-    <CoachApp client:load />
+    <!--
+      client:only="react" instead of client:load: the entire app is interactive
+      with no static content worth SSR-ing, and several state checks (window,
+      speechSynthesis, MediaRecorder) differ between server and client and
+      would cause hydration mismatches that destabilise the speech engine.
+    -->
+    <CoachApp client:only="react">
+      <div slot="fallback" class="mx-auto max-w-2xl px-6 py-10 text-zinc-500">
+        Loading interface…
+      </div>
+    </CoachApp>
   </body>
 </html>

@@ -6,6 +6,7 @@ import {
   isTTSAvailable,
   primeTTS,
   speak,
+  testSpeech,
   type RecorderHandle,
 } from '../lib/audio';
 import {
@@ -192,6 +193,7 @@ export default function CoachApp() {
   };
 
   const startRecording = async () => {
+    // Hard interrupt any in-flight TTS — we want a clean mic recording.
     cancelSpeech();
     setTransientError(null);
     try {
@@ -254,16 +256,27 @@ export default function CoachApp() {
           </div>
         )}
         {phase === 'connecting' && (
-          <StatusCard label="Connecting to local coach…" spinner />
+          <>
+            <StatusCard label="Connecting to local coach…" spinner />
+            <TestVoiceRow />
+          </>
         )}
         {phase === 'loading' && (
-          <StatusCard
-            label="Loading Gemma 4 on your machine…"
-            hint="One-time, takes ~6 seconds. The model never leaves your device."
-            spinner
-          />
+          <>
+            <StatusCard
+              label="Loading Gemma 4 on your machine…"
+              hint="One-time, takes ~6 seconds. The model never leaves your device."
+              spinner
+            />
+            <TestVoiceRow />
+          </>
         )}
-        {phase === 'ready' && <StartCard onStart={startSession} />}
+        {phase === 'ready' && (
+          <>
+            <StartCard onStart={startSession} />
+            <TestVoiceRow />
+          </>
+        )}
 
         {(phase === 'drill' ||
           phase === 'recording' ||
@@ -716,6 +729,40 @@ function ErrorCard({ message }: { message: string }) {
         Make sure the backend started cleanly. Run <code>./run-web</code> from
         the repo root.
       </div>
+    </div>
+  );
+}
+
+function TestVoiceRow() {
+  const [tested, setTested] = useState(false);
+  const [ok, setOk] = useState<boolean | null>(null);
+  const onTest = () => {
+    const fired = testSpeech();
+    setTested(true);
+    setOk(fired);
+  };
+  return (
+    <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-2 text-xs text-zinc-400">
+      <span>
+        {!tested && 'Quick check: does your browser play voice?'}
+        {tested && ok && (
+          <>
+            ✓ Test queued. If you didn't hear "Voice test, can you hear me?",
+            check System Output volume and the page's audio permission.
+          </>
+        )}
+        {tested && ok === false && (
+          <span className="text-rose-300">
+            Could not start a TTS utterance. Try Chrome/Edge/Safari.
+          </span>
+        )}
+      </span>
+      <button
+        onClick={onTest}
+        className="ml-3 shrink-0 rounded-full border border-zinc-700 px-3 py-1 text-zinc-300 transition hover:bg-zinc-800/60"
+      >
+        🔊 Test voice
+      </button>
     </div>
   );
 }

@@ -189,17 +189,31 @@ export function int16ToBase64(pcm: Int16Array): string {
 
 // ---- TTS ------------------------------------------------------------------
 //
-// Browsers (Chrome, Safari) require the FIRST `speechSynthesis.speak()` of a
-// session to happen inside a user-gesture handler. We call `speak()` from
-// async WebSocket message handlers — way too late to count as a gesture. The
-// fix is `primeTTS()`: call it from a click handler to "unlock" subsequent
-// async speak() calls. We also report whether TTS appears to be working so
-// the UI can show a hint when it isn't.
+// Cross-browser quirks we work around here:
+//
+//   1. `speechSynthesis.getVoices()` returns [] until voices have asynchronously
+//      loaded. We listen for `voiceschanged` once at module load.
+//   2. The first `speak()` of a tab MUST be initiated inside a user-gesture
+//      handler. Async WebSocket handlers don't count. `primeTTS()` performs
+//      that first speak inside a click handler so subsequent async speaks work.
+//   3. Calling `speechSynthesis.cancel()` immediately before `speak()` races on
+//      Chrome and can kill the upcoming utterance. Don't cancel unless we
+//      explicitly want to interrupt (e.g. user starts recording).
 
 let preferredVoice: SpeechSynthesisVoice | null = null;
 let primed = false;
 let lastSpeakOk = true;
 let lastSpeakError: string | null = null;
+
+if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+  // Trigger voice list loading + listen for late arrivals (Chrome).
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.addEventListener?.('voiceschanged', () => {
+    preferredVoice = null;
+    const v = ensureVoice();
+    console.log('[coach tts] voiceschanged → re-selected', v?.name);
+  });
+}
 
 function ensureVoice(): SpeechSynthesisVoice | null {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
@@ -211,66 +225,115 @@ function ensureVoice(): SpeechSynthesisVoice | null {
     voices.find((v) => preferredNames.includes(v.name) && v.lang.startsWith('en')) ??
     voices.find((v) => v.lang.startsWith('en')) ??
     voices[0];
-  console.log('[coach tts] selected voice:', preferredVoice?.name, preferredVoice?.lang);
+  console.log(
+    '[coach tts] selected voice:',
+    preferredVoice?.name,
+    preferredVoice?.lang,
+    `(${voices.length} voices available)`,
+  );
   return preferredVoice;
 }
 
+function makeUtterance(text: string): SpeechSynthesisUtterance {
+  const utter = new SpeechSynthesisUtterance(text);
+  const v = ensureVoice();
+  if (v) utter.voice = v;
+  // Setting `lang` works even when no specific voice was selected, and helps
+  // the engine pick a sensible default. Crucial on Chrome where the engine
+  // may otherwise pick a non-English voice and emit silence on English text.
+  utter.lang = v?.lang ?? 'en-US';
+  utter.rate = 0.95;
+  utter.pitch = 1.0;
+  utter.volume = 1.0;
+  utter.onstart = () => {
+    lastSpeakOk = true;
+    lastSpeakError = null;
+    console.log('[coach tts] ▶ speaking:', text);
+  };
+  utter.onend = () => {
+    console.log('[coach tts] ■ ended:', text);
+  };
+  utter.onerror = (ev) => {
+    const reason = (ev as SpeechSynthesisErrorEvent).error || 'unknown';
+    lastSpeakOk = false;
+    lastSpeakError = reason;
+    console.warn('[coach tts] ✗ error:', reason, 'on:', text);
+  };
+  return utter;
+}
+
 /**
- * Prime the speech engine inside a user-gesture handler. Speaks a near-silent
- * single-space utterance so the browser registers an explicit user intent for
- * audio playback. After this, async speak() calls work without UA blocking.
+ * Prime the speech engine inside a user-gesture handler. Speaks an audible
+ * "Let's begin" so the user gets immediate confirmation TTS works AND the
+ * engine registers the user gesture for subsequent async calls.
  *
- * Safe to call multiple times. No-op once primed.
+ * Safe to call multiple times. After the first successful prime, subsequent
+ * calls are a no-op.
  */
 export function primeTTS(): void {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-  if (primed) return;
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    console.warn('[coach tts] prime: speechSynthesis unavailable');
+    return;
+  }
+  if (primed) {
+    console.log('[coach tts] already primed');
+    return;
+  }
   try {
-    const u = new SpeechSynthesisUtterance(' ');
-    u.volume = 0.01;
-    u.rate = 1.0;
+    const u = makeUtterance("Let's begin.");
     window.speechSynthesis.speak(u);
     primed = true;
-    console.log('[coach tts] primed');
+    console.log('[coach tts] primed (queued audible utterance)');
   } catch (e) {
     console.warn('[coach tts] prime failed', e);
   }
 }
 
+/**
+ * Speak `text`. Does NOT cancel any in-flight utterance — the new one will
+ * queue. Use `cancelSpeech()` first if you want hard interruption (e.g. user
+ * tapped the mic button to start recording).
+ */
 export function speak(text: string): void {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-    console.warn('[coach tts] speechSynthesis unavailable');
+    console.warn('[coach tts] speak: speechSynthesis unavailable');
     lastSpeakOk = false;
     lastSpeakError = 'speechSynthesis API not present in this browser';
     return;
   }
   const trimmed = text.trim();
   if (!trimmed) return;
-
+  if (!primed) {
+    console.warn(
+      '[coach tts] speak() before primeTTS() — browser may suppress this. ' +
+        'Make sure primeTTS() ran inside a click handler.',
+    );
+  }
   try {
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(trimmed);
-    const v = ensureVoice();
-    if (v) utter.voice = v;
-    utter.rate = 0.95;
-    utter.pitch = 1.0;
-    utter.volume = 1.0;
-    utter.onstart = () => {
-      lastSpeakOk = true;
-      lastSpeakError = null;
-      console.log('[coach tts] speaking:', trimmed);
-    };
-    utter.onerror = (ev) => {
-      const reason = (ev as SpeechSynthesisErrorEvent).error || 'unknown';
-      lastSpeakOk = false;
-      lastSpeakError = reason;
-      console.warn('[coach tts] error:', reason, 'on:', trimmed);
-    };
-    window.speechSynthesis.speak(utter);
+    const u = makeUtterance(trimmed);
+    window.speechSynthesis.speak(u);
   } catch (e) {
     lastSpeakOk = false;
     lastSpeakError = e instanceof Error ? e.message : String(e);
     console.error('[coach tts] threw', e);
+  }
+}
+
+/**
+ * Convenience for the diagnostic "Test voice" button — speaks at full volume,
+ * primes if needed, and returns whether the call was made.
+ */
+export function testSpeech(): boolean {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return false;
+  primed = true; // count this click as the prime
+  try {
+    const u = makeUtterance('Voice test, can you hear me?');
+    window.speechSynthesis.speak(u);
+    console.log('[coach tts] test utterance queued');
+    return true;
+  } catch (e) {
+    console.error('[coach tts] test failed', e);
+    return false;
   }
 }
 

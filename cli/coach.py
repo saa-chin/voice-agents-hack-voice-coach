@@ -314,16 +314,20 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 # --- Coach loop -----------------------------------------------------------
 
-_TRAILING_PUNCT = " .!?,;:"
+_TRAILING_PUNCT = " \t\n\r.!?,;:"
 
 
 def _join_for_speech(ack: str, feedback: str) -> str:
-    """Combine ack + feedback into one TTS line with no double punctuation."""
+    """Combine ack + feedback into one TTS line with no double punctuation.
+
+    Empty / whitespace-only inputs are skipped entirely so we never emit a
+    bare ". ." utterance to the speech engine.
+    """
     parts: list[str] = []
-    if ack:
-        parts.append(ack.rstrip(_TRAILING_PUNCT))
-    if feedback:
-        parts.append(feedback.rstrip(_TRAILING_PUNCT))
+    for piece in (ack, feedback):
+        cleaned = piece.strip().rstrip(_TRAILING_PUNCT)
+        if cleaned:
+            parts.append(cleaned)
     if not parts:
         return ""
     return ". ".join(parts) + "."

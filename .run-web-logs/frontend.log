@@ -1,23 +1,24 @@
-22:06:29 [types] Generated 0ms
+22:13:42 [types] Generated 0ms
 
- astro  v4.16.19 ready in 377 ms
+ astro  v4.16.19 ready in 772 ms
 
 ┃ Local    http://127.0.0.1:4321/
 
-22:06:29 watching for file changes...
-22:06:30 [200] / 6ms
-22:06:30 [200] / 7ms
-22:06:30 [200] / 3ms
-22:06:53 [200] / 6ms
-22:07:09 [200] / 6ms
-22:08:06 [200] / 5ms
-22:10:40 [200] / 5ms
-22:10:54 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
-22:11:02 [200] / 3ms
-22:11:19 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
-22:11:32 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
-22:12:00 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
-22:12:07 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
-22:12:14 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
-22:12:18 [watch] src/env.d.ts
-22:12:18 [200] / 7ms
+22:13:42 watching for file changes...
+22:13:42 [200] / 5ms
+22:13:42 [200] / 2ms
+22:13:53 [200] / 4ms
+22:15:38 [200] / 7ms
+22:15:41 [200] / 5ms
+22:16:02 [200] / 5ms
+22:16:19 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
+22:16:25 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+22:16:31 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+22:16:35 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+22:16:45 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+22:17:00 [200] / 2ms
+22:17:29 [404] /.well-known/appspecific/com.chrome.devtools.json 2ms
+22:18:18 [watch] src/pages/index.astro
+22:18:19 [200] / 8ms
+22:18:19 [404] /.well-known/appspecific/com.chrome.devtools.json 0ms
+22:18:29 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
