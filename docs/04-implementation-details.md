@@ -38,7 +38,7 @@ voice-agents-hack-voice-coach/
 | TTS output | `AVSpeechSynthesizer` (iOS) / `TextToSpeech` (Android) | Free, fast, decent quality |
 | Local storage | `react-native-quick-sqlite` | Sync, fast, works on Hermes |
 | Charts | `victory-native` or `react-native-svg` hand-rolled | Simple 7-day line |
-| Cloud (opt-in) | `google-genai` SDK → Gemini 2.5 | Text only, sanitized |
+| Cloud | none | The app is fully on-device by design; Cactus auto-handoff is disabled (`confidence_threshold = 0`) |
 | State | Zustand | Tiny, no boilerplate |
 | Logging | `react-native-logs` to a local rolling file | No telemetry sent anywhere |
 
@@ -165,8 +165,6 @@ Tasks are sized so a small team can execute in parallel. **P0** is required for 
 | T20 | ☐ | FunctionGemma router for "retry / rest / repeat / done" intents from voice | Inference | P1 | 2h | T13 |
 | T21 | ☐ | Accessibility pass: large text mode, high contrast, hit-target sizes, screen reader labels | Frontend | P0 | 1.5h | T01 |
 | T22 | ☑ | Empty / first-run / model-downloading states with a clear progress UI | Frontend | P0 | 1h | T03 |
-| T23 | ☐ | Cloud (opt-in) weekly PDF report via Gemini — sanitized metrics only | Cloud | P2 | 3h | T16 |
-| T24 | ☐ | Cloud (opt-in) personalized phrase generator via Gemini | Cloud | P2 | 2h | T12 |
 | T25 | ☐ | App icon, splash screen, Home-screen polish | Frontend | P0 | 1h | T01 |
 
 **P0 total: ~26 hours of focused engineering work, parallelizable across two people.**
@@ -203,11 +201,9 @@ Quick checklist view, grouped by priority. Tick boxes as work lands.
 - [ ] T19 — History screen (list of past sessions, detail view)
 - [ ] T20 — FunctionGemma router for voice intents (retry / rest / repeat / done)
 
-**P2 — stretch (3 tasks)**
+**P2 — stretch (1 task)**
 
 - [ ] T08 — DSP: syllable-nucleus pace estimator
-- [ ] T23 — Cloud weekly PDF report via Gemini (opt-in)
-- [ ] T24 — Cloud personalized phrase generator via Gemini (opt-in)
 
 ## 7. Supporting work tracks (clinical, content, design, ops)
 

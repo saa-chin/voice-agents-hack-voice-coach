@@ -41,17 +41,15 @@ We are not claiming to deliver LSVT LOUD therapy itself — that is a trademarke
 
 This positioning matters legally (we are a wellness and practice tool, not a medical device on day one) and clinically (speech-language pathologists will recommend a tool that reinforces what they already do, not one that tries to replace them).
 
-## The hybrid model: on-device by default, cloud only when it adds value
+## Fully on-device — no cloud, no fallback
 
 | Function | Where it runs | Why |
 | --- | --- | --- |
 | Live loudness, pitch, pace metering | On-device DSP | Microsecond latency, deterministic, no model needed |
 | Real-time coaching feedback (audio in, speech out) | On-device — Gemma 4 E2B via Cactus | Privacy, latency, zero marginal cost |
-| Intent routing and tool calls within the app | On-device — FunctionGemma 270M | Sub-100ms decisions, no round-trip |
-| Weekly progress report for clinician (PDF) | Cloud — Gemini, opt-in only | Sanitized metrics only, no audio ever uploaded |
-| Personalized new drill scripts | Cloud — Gemini, opt-in only | Pure text generation, no PHI |
+| Intent routing within the app (skip / rest / repeat) | On-device — regex `HeuristicClassifier` (default) or opt-in FunctionGemma 270M | Zero-ms decisions; no extra model loaded by default |
 
-The default mode is fully offline. Cloud is an opt-in upgrade for users who want clinician sharing or richer drill content. Even then, audio never leaves the device.
+There is no cloud path. Audio, transcripts, metrics, and progress data all stay on the device. Cactus's automatic cloud-handoff feature is explicitly disabled (`confidence_threshold = 0`) so a flaky judgement from Gemma 4 never triggers a silent network call.
 
 ## Why this is a venture-backable business
 

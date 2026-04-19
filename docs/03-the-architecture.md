@@ -13,18 +13,14 @@ Every architectural choice in Voice Coach flows from four non-negotiable princip
 
 ```mermaid
 flowchart TB
-    subgraph Device["📱 Patient's Phone — fully offline by default"]
+    subgraph Device["📱 Patient's Phone — fully offline, no cloud"]
         Mic[🎤 Microphone<br/>16 kHz PCM stream]
         UI[React Native UI<br/>Drill • Meter • Summary]
         DSP[Native DSP module<br/>Loudness · Pitch · Pace]
-        Router[FunctionGemma 270M<br/>Intent + tool routing]
-        Gemma[Gemma 4 E2B<br/>Multimodal voice coach]
+        Router[Regex HeuristicClassifier<br/>skip · rest · repeat]
+        Gemma[Gemma 4 E2B<br/>Multimodal voice coach<br/>Cactus, KV-cache pinned]
         TTS[System TTS<br/>AVSpeechSynthesizer / Android TTS]
         DB[(SQLite<br/>Sessions · Metrics · Trends)]
-    end
-
-    subgraph Cloud["☁️ Cloud — opt-in only, no audio ever"]
-        Gemini[Gemini 2.5<br/>Weekly reports · New drills]
     end
 
     Mic --> DSP
@@ -36,8 +32,6 @@ flowchart TB
     Gemma --> TTS
     Gemma --> DB
     TTS --> UI
-    DB -.opt-in, sanitized text only.-> Gemini
-    Gemini -.PDF report / new drill scripts.-> DB
 ```
 
 ## The four layers
@@ -107,14 +101,11 @@ sequenceDiagram
 
 > The first end-to-end build measured ~10–12 s per turn against this budget — a ~10× miss. The fix kept Gemma 4 audio-native and changed *how* we drive Cactus, not what model we use. See [Implementation §10 — Cactus-style optimization](04-implementation-details.md#10-cactus-style-optimization-april-2026) for the diagrams, measurements, and source map.
 
-## The cloud boundary
+## No cloud boundary
 
-The cloud is touched in exactly two places, both opt-in, both text-only:
+There isn't one. Audio, transcripts, metrics, and progress data never leave the device. Cactus's automatic cloud-handoff is explicitly disabled (`confidence_threshold = 0`) so a low-confidence Gemma 4 turn never falls back to a network call.
 
-- **Weekly clinician report.** A summary of the week's metrics (numbers and short text labels — never audio, never raw transcripts) is sent to Gemini, which generates a clean PDF the patient can email to their speech-language pathologist.
-- **Personalized drill generation.** When a patient wants new practice content ("phrases about my grandkids," "phrases I use at the pharmacy"), Gemini generates the text. The audio practice itself still happens locally.
-
-Everything else — every microphone sample, every coaching turn, every metric — stays on the device.
+If a future version wants to add a feature that genuinely requires the cloud (clinician sharing, content packs, etc.), it has to be designed in from scratch — there is no implicit cloud path to lean on today.
 
 ## Why this architecture is the right choice
 
@@ -123,4 +114,4 @@ Everything else — every microphone sample, every coaching turn, every metric �
 | **Zero adoption friction** | Patients can use the app from day one with no account, no subscription, and no connectivity. Every barrier that current speech-therapy apps impose is removed by design. |
 | **Clinical and enterprise viability** | On-device-by-default sidesteps the HIPAA and GDPR data-processor questions that have kept cloud-based competitors out of clinical recommendation. |
 | **Right tool for each job** | The split between DSP, FunctionGemma, and Gemma 4 means each layer does what it is best at — fast meters, fast routing, deep coaching — instead of asking one model to do everything badly. |
-| **Full multimodal stack on-device** | Native audio into a multimodal LLM, on-device, with sub-second turn-taking, with a small specialist model gating the large one, and an optional cloud handoff for the narrow set of tasks that genuinely benefit from it. |
+| **Full multimodal stack on-device** | Native audio into a multimodal LLM, on-device, with sub-second turn-taking, and a regex intent router that handles control-flow phrases without waking the large model. No cloud handoff anywhere in the path. |

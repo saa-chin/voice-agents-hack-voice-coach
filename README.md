@@ -12,9 +12,10 @@
 
 ## Context
 - Cactus (YC S25) is a low-latency engine for mobile devices & wearables. 
-- Cactus runs locally on edge devices with hybrid routing of complex tasks to cloud models like Gemini.
+- Cactus runs locally on edge devices.
 - Google DeepMind just released Gemma 4, the first on-device model you can voice-prompt. 
-- Gemma 4 on Cactus is multimodal, supporting voice, vision, function calling, transcription and more! 
+- Gemma 4 on Cactus is multimodal, supporting voice, vision, function calling, transcription and more!
+- **Voice Coach is fully on-device — no cloud, no fallback.** All audio, transcripts, and metrics stay on the patient's machine.
 
 ## Challenge
 - All teams MUST build products that use Gemma 4 on Cactus. 
@@ -43,10 +44,7 @@ Prizes per special track:
 - Step 4: `cactus build --python`
 - Step 5: `cactus download google/functiongemma-270m-it --reconvert`
 - Step 6: Get cactus key from the [cactus website](https://cactuscompute.com/dashboard/api-keys)
-- Sept 7: Run `cactus auth` and enter your token when prompted.
-- Step 8: `pip install google-genai` (if using cloud fallback) 
-- Step 9: Obtain Gemini API key from [Google AI Studio](https://aistudio.google.com/api-keys) (if using cloud fallback) 
-- Step 10: `export GEMINI_API_KEY="your-key"` (if using cloud fallback) 
+- Step 7: Run `cactus auth` and enter your token when prompted.
 
 ## Run locally
 
