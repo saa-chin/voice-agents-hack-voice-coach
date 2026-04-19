@@ -62,24 +62,43 @@ SESSION_DIR = Path(
 COACH_SYSTEM_TEMPLATE = """You are a warm, patient speech coach for adults with motor speech
 disorders (Parkinson's, post-stroke dysarthria).
 
-The patient is on a {stage} drill. They were asked to say:
+The patient is on a {stage} drill. They were ASKED to say:
 "{prompt}"
 
-Measured signal (relative, NOT calibrated to room SPL):
-- average voiced loudness: {achieved_dbfs:.1f} dBFS
-- target loudness:         {target_dbfs:.1f} dBFS
-- utterance duration:      {duration_s:.1f} s
+You will hear their attempt as audio. Do these in order:
 
-You will hear their attempt as audio. Listen for: vocal effort, breath
-support, pitch monotony, trailing off, rushed pace, slurred articulation.
-Be specific but never discouraging.
+1. Identify what they ACTUALLY said. Put a brief transcription in the
+   "heard" field (1-10 words, lowercase, no punctuation). If you hear
+   only silence or noise, write "heard": "(nothing clear)".
+
+2. Decide whether what you heard matches what was asked. Set
+   "metrics_observed.matched_prompt" accordingly. For warm-up vowels,
+   loose vowel matches count (e.g. "ah" ~ "aaah"). For phrases, the
+   key content words must be present.
+
+3. If matched_prompt is FALSE: set "next_action" to "retry" and have
+   "feedback" gently say what you heard and ask them to try the
+   requested prompt again. Example feedback: "I heard 'nah' — try
+   the long vowel 'aaah' once more, holding it steady."
+
+4. If matched_prompt is TRUE: give vocal-quality feedback grounded in
+   these measurements (relative, NOT room-calibrated SPL):
+     - average voiced loudness: {achieved_dbfs:.1f} dBFS
+     - target loudness:         {target_dbfs:.1f} dBFS
+     - utterance duration:      {duration_s:.1f} s
+   Listen for vocal effort, breath support, pitch monotony, trailing
+   off, rushed pace, slurred articulation. Be specific but never
+   discouraging. Choose "advance" if it was solid, "retry" if a
+   specific element needs another attempt, "rest" if they sound tired.
 
 Respond with JSON ONLY. No prose, no markdown fences. Schema:
 {{
+  "heard": "<short transcription, 1-10 words>",
   "ack": "<one short warm acknowledgement, 3-6 words>",
   "feedback": "<one specific, actionable cue, 8-18 words>",
   "next_action": "retry" | "advance" | "rest",
   "metrics_observed": {{
+    "matched_prompt": true | false,
     "loudness_ok": true | false,
     "pitch_range_ok": true | false,
     "pace_ok": true | false,
@@ -295,6 +314,21 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 # --- Coach loop -----------------------------------------------------------
 
+_TRAILING_PUNCT = " .!?,;:"
+
+
+def _join_for_speech(ack: str, feedback: str) -> str:
+    """Combine ack + feedback into one TTS line with no double punctuation."""
+    parts: list[str] = []
+    if ack:
+        parts.append(ack.rstrip(_TRAILING_PUNCT))
+    if feedback:
+        parts.append(feedback.rstrip(_TRAILING_PUNCT))
+    if not parts:
+        return ""
+    return ". ".join(parts) + "."
+
+
 class _TokenCollector:
     """Accumulate streamed tokens into a single string.
 
@@ -477,13 +511,18 @@ def coach_mode(
                 retries_for_drill = 0
                 continue
 
+            heard = (valid.get("heard") or "").strip()
             ack = (valid.get("ack") or "").strip()
             feedback = (valid.get("feedback") or "").strip()
             action = valid["next_action"]
+            matched = bool(valid.get("metrics_observed", {}).get("matched_prompt", True))
 
-            spoken = ". ".join(part for part in (ack, feedback) if part)
-            print(f"   coach: {spoken}")
+            if heard:
+                tag = "" if matched else "  ✗ mismatch"
+                print(f"   heard: \"{heard}\"{tag}")
+            spoken = _join_for_speech(ack, feedback)
             if spoken:
+                print(f"   coach: {spoken}")
                 speak_blocking(spoken, voice_name)
 
             _append_jsonl(session_path, {
