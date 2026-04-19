@@ -229,9 +229,42 @@ FRONTEND_LOG="$LOG_DIR/frontend.log"
 : > "$BACKEND_LOG"
 : > "$FRONTEND_LOG"
 
+# --- Apple Neural Engine acceleration --------------------------------------
+#
+# Cactus is a CPU-SIMD inference engine (NEON / int8 i8mm) and does NOT
+# expose a Metal/GPU code path for the LLM itself. What it DOES support
+# is dispatching the audio + vision encoders through CoreML, which on
+# Apple Silicon means the work can run on the Neural Engine (ANE) and
+# the GPU instead of the CPU.
+#
+# Whether ANE is used per-stage is controlled by env vars (defaults are
+# auto-detect). We pin them to "all" — the CoreML MLComputeUnits.all
+# policy — which lets CoreML choose between CPU + GPU + ANE per op,
+# typically picking ANE for big matmuls and GPU for the rest. This is
+# "use the Neural Engine and GPU when it's faster than the CPU".
+#
+# What ACTUALLY moves to ANE/GPU on this install:
+#   - audio_encoder (gemma-4)  — present at $WEIGHTS_DIR/.../audio_encoder.mlpackage
+#   - whisper-tiny encoder     — present at $WEIGHTS_DIR/whisper-tiny/model.mlpackage
+# The Gemma 4 LLM PREFILL step would also accelerate if a
+# `model.mlpackage` shipped, but the brew formula doesn't include one,
+# so prefill stays on CPU and you'll still see one warning per boot:
+#   [gemma4] model.mlpackage not found; using CPU prefill
+# That's expected — there's no client-side fix without a different
+# weights distribution.
+export CACTUS_ANE_COMPUTE_UNITS="${CACTUS_ANE_COMPUTE_UNITS:-all}"
+export CACTUS_ANE_AUDIO_COMPUTE_UNITS="${CACTUS_ANE_AUDIO_COMPUTE_UNITS:-all}"
+export CACTUS_ANE_ENCODER_COMPUTE_UNITS="${CACTUS_ANE_ENCODER_COMPUTE_UNITS:-all}"
+export CACTUS_ANE_PREFILL_COMPUTE_UNITS="${CACTUS_ANE_PREFILL_COMPUTE_UNITS:-all}"
+ok "ANE compute units → all (CPU + GPU + ANE; CoreML picks per op)"
+
 (
   cd "$BACKEND_DIR"
   VOICE_COACH_LOG_LEVEL="$LOG_LEVEL" \
+  CACTUS_ANE_COMPUTE_UNITS="$CACTUS_ANE_COMPUTE_UNITS" \
+  CACTUS_ANE_AUDIO_COMPUTE_UNITS="$CACTUS_ANE_AUDIO_COMPUTE_UNITS" \
+  CACTUS_ANE_ENCODER_COMPUTE_UNITS="$CACTUS_ANE_ENCODER_COMPUTE_UNITS" \
+  CACTUS_ANE_PREFILL_COMPUTE_UNITS="$CACTUS_ANE_PREFILL_COMPUTE_UNITS" \
     python3.14 -m uvicorn app.main:app \
       --host 127.0.0.1 \
       --port "$BACKEND_PORT" \
