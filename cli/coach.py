@@ -44,8 +44,6 @@ log = _log.get("coach")
 #   - web-py/backend         imports SR, MIN_SPEECH_MS via `import coach`
 #   - web-py/frontend audio  hard-coded `TARGET_SAMPLE_RATE = 16000` —
 #                            keep it in sync with SR below
-#   - mobile/App.tsx         hard-coded `SAMPLE_RATE = 16000` —
-#                            keep it in sync with SR below
 
 SR = 16000
 FRAME_MS = 50
