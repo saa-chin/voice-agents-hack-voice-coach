@@ -93,7 +93,7 @@ def ensure_model(model_id: str) -> Path:
 # Text chat
 # ----------------------------------------------------------------------------
 
-def text_chat(model_id: str, system: str, temperature: float, max_tokens: int) -> None:
+def text_chat(model_id: str, system: str, temperature: float, max_tokens: int) -> None:  # pragma: no cover - interactive REPL, exercised by hand via ./run-cli --text
     ensure_lib_discoverable()
     weights = ensure_model(model_id)
 
@@ -195,7 +195,7 @@ def speak_blocking(text: str, voice: str | None) -> None:
         _SAY_PROCESS = subprocess.Popen(args)
     try:
         _SAY_PROCESS.wait()
-    except KeyboardInterrupt:
+    except KeyboardInterrupt:  # pragma: no cover - timing-sensitive interactive path
         if _SAY_PROCESS and _SAY_PROCESS.poll() is None:
             _SAY_PROCESS.terminate()
         raise
@@ -236,7 +236,7 @@ def _split_sentences(text: str) -> tuple[list[str], str]:
     return out, buf
 
 
-def _cactus_complete_audio(
+def _cactus_complete_audio(  # pragma: no cover - direct ctypes FFI; needs libcactus.dylib loaded
     cactus_mod, model_handle, messages_json: str, options_json: str,
     pcm_bytes: bytes, on_token,
 ) -> str:
@@ -280,7 +280,7 @@ def _cactus_complete_audio(
     return buf.value.decode("utf-8", errors="ignore")
 
 
-def voice_chat(
+def voice_chat(  # pragma: no cover - needs mic + Cactus + macOS `say`
     model_id: str,
     system: str,
     temperature: float,
@@ -511,7 +511,7 @@ def voice_chat(
 # Coach mode — drill-driven JSON-structured speech practice
 # ----------------------------------------------------------------------------
 
-def coach_chat(
+def coach_chat(  # pragma: no cover - shim; delegates to coach.coach_mode (full integration)
     model_id: str,
     voice: str | None,
     temperature: float,
@@ -605,7 +605,7 @@ def main() -> None:
         text_chat(args.model, args.system, args.temperature, args.max_tokens)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - script entry guard
     try:
         main()
     except KeyboardInterrupt:

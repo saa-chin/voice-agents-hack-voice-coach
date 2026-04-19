@@ -22,3 +22,21 @@
 22:18:19 [200] / 8ms
 22:18:19 [404] /.well-known/appspecific/com.chrome.devtools.json 0ms
 22:18:29 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
+22:30:45 Configuration file updated. Restarting...
+22:30:45 Configuration file updated. Restarting...
+22:30:45 [types] Generated 0ms
+22:30:45 [types] Generated 0ms
+22:30:45 [vite] Port 4321 is in use, trying another one...
+22:30:45 Configuration file updated. Restarting...
+22:30:45 [vite] Port 4321 is in use, trying another one...
+22:30:45 [vite] Port 4322 is in use, trying another one...
+22:30:45 [types] Generated 0ms
+22:30:58 [200] / 3ms
+22:30:59 [404] /.well-known/appspecific/com.chrome.devtools.json 22ms
+22:33:28 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
+22:33:32 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
+22:33:39 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
+22:33:43 [watch] /src/styles/global.css, /src/components/CoachApp.tsx
+22:34:00 [watch] src/lib/audio.test.ts
+22:34:01 [200] / 2ms
+22:34:01 [404] /.well-known/appspecific/com.chrome.devtools.json 0ms

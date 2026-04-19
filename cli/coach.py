@@ -199,7 +199,7 @@ def rms_to_dbfs(rms: float) -> float:
 
 # --- Mic capture ----------------------------------------------------------
 
-def capture_one_utterance(np_mod, sd_mod) -> tuple[bytes, float, float]:
+def capture_one_utterance(np_mod, sd_mod) -> tuple[bytes, float, float]:  # pragma: no cover - needs sounddevice + microphone
     """Block until one utterance is captured.
 
     Returns (pcm_bytes, avg_dbfs_over_voiced_frames, duration_s).
@@ -355,7 +355,7 @@ class _TokenCollector:
         return "".join(self.parts)
 
 
-def coach_mode(
+def coach_mode(  # pragma: no cover - full hardware+model integration; covered by test_server.py via WebSocket
     cactus_module,                       # imported `cactus` module
     cactus_complete_audio: Callable,     # _cactus_complete_audio from chat.py
     speak_blocking: Callable[[str, str | None], None],

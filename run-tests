@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# run-tests — run the full Python + TypeScript test suite with coverage.
+#
+# Usage:
+#   ./run-tests                # both suites
+#   ./run-tests --py           # Python only
+#   ./run-tests --ts           # TypeScript only
+#   ./run-tests --watch        # keep TS tests in watch mode (skip Python)
+#   ./run-tests --no-coverage  # faster, no coverage report
+#   ./run-tests -h | --help    # this help
+#
+# Same env-check + dep-install pattern as run-cli / run-web. Exit codes:
+#   0  all passed (and coverage thresholds met)
+#   1  test failure
+#   10 missing required tool
+#   13 dep install failed
+set -u
+set -o pipefail
+
+if [[ -t 1 ]]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GRN=$'\033[32m'
+  YLW=$'\033[33m'; BLU=$'\033[34m'; RST=$'\033[0m'
+else
+  BOLD=""; DIM=""; RED=""; GRN=""; YLW=""; BLU=""; RST=""
+fi
+
+step() { printf "\n${BOLD}${BLU}==>${RST} ${BOLD}%s${RST}\n" "$*"; }
+info() { printf "    ${DIM}%s${RST}\n" "$*"; }
+ok()   { printf "    ${GRN}✓${RST} %s\n" "$*"; }
+warn() { printf "    ${YLW}!${RST} %s\n" "$*"; }
+die() {
+  printf "\n${BOLD}${RED}✗ %s${RST}\n" "$1" >&2
+  shift || true
+  for line in "$@"; do
+    printf "  ${DIM}→${RST} %s\n" "$line" >&2
+  done
+  exit "${EXIT_CODE:-1}"
+}
+
+show_help() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TESTS_DIR="$SCRIPT_DIR/tests"
+FRONTEND_DIR="$SCRIPT_DIR/web-py/frontend"
+
+RUN_PY=1
+RUN_TS=1
+WATCH_TS=0
+COVERAGE=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)     show_help ;;
+    --py)          RUN_PY=1; RUN_TS=0; shift ;;
+    --ts)          RUN_PY=0; RUN_TS=1; shift ;;
+    --watch)       RUN_PY=0; RUN_TS=1; WATCH_TS=1; shift ;;
+    --no-coverage) COVERAGE=0; shift ;;
+    *)             die "Unknown flag: $1" "Try ./run-tests --help" ;;
+  esac
+done
+
+# --- Python suite -----------------------------------------------------------
+
+run_python_tests() {
+  step "Python tests"
+
+  command -v python3.14 >/dev/null 2>&1 || \
+    EXIT_CODE=10 die "python3.14 not found" "Install: brew install python@3.14"
+  ok "python3.14 → $(command -v python3.14)"
+
+  if ! python3.14 -c "import pytest, fastapi, httpx" >/dev/null 2>&1; then
+    info "Installing test deps into python3.14 site-packages…"
+    if ! python3.14 -m pip install --quiet --break-system-packages \
+          -r "$TESTS_DIR/requirements.txt" >/dev/null 2>&1; then
+      EXIT_CODE=13 die "Failed to install Python test deps" \
+        "Try: python3.14 -m pip install --break-system-packages -r $TESTS_DIR/requirements.txt"
+    fi
+    ok "Installed Python test deps"
+  else
+    ok "Python test deps already installed"
+  fi
+
+  cd "$SCRIPT_DIR"
+  if [[ "$COVERAGE" -eq 0 ]]; then
+    python3.14 -m pytest --no-cov || return $?
+  else
+    python3.14 -m pytest || return $?
+  fi
+}
+
+# --- TypeScript suite -------------------------------------------------------
+
+run_typescript_tests() {
+  step "TypeScript tests"
+
+  command -v node >/dev/null 2>&1 || \
+    EXIT_CODE=10 die "node not found" "Install: brew install node"
+  command -v npm  >/dev/null 2>&1 || \
+    EXIT_CODE=10 die "npm not found" "Install: brew install node"
+  ok "node $(node --version)"
+
+  if [[ ! -d "$FRONTEND_DIR/node_modules" ]] || \
+     [[ ! -d "$FRONTEND_DIR/node_modules/vitest" ]]; then
+    info "Installing frontend deps (first time may take ~30-60s)…"
+    ( cd "$FRONTEND_DIR" && npm install --silent --no-audit --no-fund ) || \
+      EXIT_CODE=13 die "npm install failed in $FRONTEND_DIR"
+    ok "Installed frontend deps"
+  else
+    ok "Frontend deps present"
+  fi
+
+  cd "$FRONTEND_DIR"
+  if [[ "$WATCH_TS" -eq 1 ]]; then
+    npm run test:watch
+  elif [[ "$COVERAGE" -eq 1 ]]; then
+    npm run test:coverage
+  else
+    npm test
+  fi
+}
+
+# --- Drive ------------------------------------------------------------------
+
+OVERALL_RC=0
+
+if [[ "$RUN_PY" -eq 1 ]]; then
+  run_python_tests || OVERALL_RC=$?
+fi
+
+if [[ "$RUN_TS" -eq 1 ]]; then
+  run_typescript_tests || OVERALL_RC=$?
+fi
+
+step "Result"
+if [[ "$OVERALL_RC" -eq 0 ]]; then
+  ok "all tests passed"
+else
+  printf "    ${RED}✗${RST} suite failed (rc=$OVERALL_RC)\n"
+fi
+exit "$OVERALL_RC"

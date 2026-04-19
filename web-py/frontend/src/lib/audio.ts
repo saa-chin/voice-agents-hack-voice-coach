@@ -21,6 +21,11 @@ export interface RecorderHandle {
   level: () => number;
 }
 
+/* v8 ignore start */
+// createRecorder is a thin adapter over getUserMedia + MediaRecorder +
+// AudioContext.decodeAudioData. None of those are available in jsdom/happy-dom,
+// and verifying them only matters in a real browser. The pure DSP helpers it
+// internally uses (audioBufferToInt16, floatToInt16) are exported and unit-tested.
 export async function createRecorder(): Promise<RecorderHandle> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
@@ -118,6 +123,10 @@ export async function createRecorder(): Promise<RecorderHandle> {
   };
 }
 
+/* v8 ignore stop */
+
+/* v8 ignore start */
+// Browser-detection branch — both arms covered only in real browsers.
 function pickMimeType(): string | undefined {
   if (typeof MediaRecorder === 'undefined') return undefined;
   const candidates = [
@@ -131,8 +140,15 @@ function pickMimeType(): string | undefined {
   }
   return undefined;
 }
+/* v8 ignore stop */
 
-function audioBufferToInt16(buf: AudioBuffer, targetSr: number): Int16Array {
+/**
+ * Convert a Web Audio AudioBuffer (multi-channel Float32 in [-1, 1]) to a
+ * mono 16 kHz Int16Array. Linear-interpolation resample — adequate for speech.
+ * Exported for direct unit testing; in production it's only called by
+ * createRecorder() after decodeAudioData.
+ */
+export function audioBufferToInt16(buf: AudioBuffer, targetSr: number): Int16Array {
   const inSr = buf.sampleRate;
   const inLen = buf.length;
   const channels = buf.numberOfChannels;
@@ -167,7 +183,8 @@ function audioBufferToInt16(buf: AudioBuffer, targetSr: number): Int16Array {
   return floatToInt16(out);
 }
 
-function floatToInt16(float32: Float32Array): Int16Array {
+/** Clip + scale Float32 [-1, 1] samples to Int16Array. Exported for tests. */
+export function floatToInt16(float32: Float32Array): Int16Array {
   const out = new Int16Array(float32.length);
   for (let i = 0; i < float32.length; i++) {
     const x = Math.max(-1, Math.min(1, float32[i]));

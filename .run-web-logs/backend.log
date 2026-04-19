@@ -70,3 +70,39 @@ INFO:     127.0.0.1:58465 - "WebSocket /ws/coach" [accepted]
 22:18:29 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=58465)
 22:18:29 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T051829Z.jsonl
 INFO:     connection open
+22:30:58 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:61669 - "WebSocket /ws/coach" [accepted]
+22:30:59 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=61669)
+22:30:59 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T053059Z.jsonl
+INFO:     connection open
+22:33:29 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:62341 - "WebSocket /ws/coach" [accepted]
+22:33:29 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=62341)
+22:33:29 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T053329Z.jsonl
+INFO:     connection open
+INFO:     127.0.0.1:62355 - "WebSocket /ws/coach" [accepted]
+22:33:32 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=62355)
+22:33:32 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T053332Z.jsonl
+INFO:     connection open
+22:33:32 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+22:33:40 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:62396 - "WebSocket /ws/coach" [accepted]
+22:33:40 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=62396)
+22:33:40 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T053340Z.jsonl
+INFO:     connection open
+22:33:43 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:62407 - "WebSocket /ws/coach" [accepted]
+22:33:43 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=62407)
+22:33:43 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T053343Z.jsonl
+INFO:     connection open
+22:34:01 INFO  voicecoach.server: client disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:62500 - "WebSocket /ws/coach" [accepted]
+22:34:01 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=62500)
+22:34:01 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T053401Z.jsonl
+INFO:     connection open

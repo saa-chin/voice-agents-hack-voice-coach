@@ -28,7 +28,12 @@ def _b64_pcm(seconds: float = 1.0) -> str:
 
 @pytest.fixture
 def server(monkeypatch, tmp_path):
-    """A fresh server with model pre-loaded as a stub."""
+    """A fresh server with model pre-loaded as a stub.
+
+    The lifespan handler eagerly schedules `holder.ensure_loaded()` on app
+    start; we replace that with an async no-op so individual tests get full
+    control of the holder state at WebSocket handshake time.
+    """
     from app import main as srv
 
     # Sandbox session log per test.
@@ -42,6 +47,11 @@ def server(monkeypatch, tmp_path):
     srv.holder.model = MagicMock(name="model_handle")
     srv.holder.weights_path = tmp_path / "fake_weights"
     srv.holder.load_error = None
+
+    async def _noop_ensure_loaded():
+        return None
+
+    monkeypatch.setattr(srv.holder, "ensure_loaded", _noop_ensure_loaded)
 
     # Default canned reply — overridable per-test.
     state = {
@@ -127,18 +137,24 @@ def test_ws_sends_ready_when_model_already_loaded(server):
 
 
 def test_ws_sends_loading_then_ready_if_not_loaded(server, monkeypatch):
-    """When the holder reports unloaded, server emits 'loading' before 'ready'."""
+    """When the holder reports unloaded, server emits 'loading' before 'ready'.
+
+    We swap `ensure_loaded` AFTER TestClient enters so the lifespan startup
+    task (which calls the fixture's no-op) doesn't race us by setting `model`
+    before our WebSocket handler runs.
+    """
     holder = server["holder"]
-    cached_model = holder.model
-    holder.model = None  # mark unloaded
-
-    async def fake_ensure_loaded():
-        # Simulate the lazy load completing.
-        holder.model = cached_model
-
-    monkeypatch.setattr(holder, "ensure_loaded", fake_ensure_loaded)
+    cached = holder.model
 
     with TestClient(server["app"]) as client:
+        # Now lifespan has finished. Mark unloaded for the upcoming WS.
+        holder.model = None
+
+        async def fake_ensure_loaded():
+            holder.model = cached
+
+        monkeypatch.setattr(holder, "ensure_loaded", fake_ensure_loaded)
+
         with client.websocket_connect("/ws/coach") as ws:
             assert ws.receive_json()["type"] == "loading"
             assert ws.receive_json()["type"] == "ready"
@@ -146,15 +162,16 @@ def test_ws_sends_loading_then_ready_if_not_loaded(server, monkeypatch):
 
 def test_ws_reports_load_error_to_client(server, monkeypatch):
     holder = server["holder"]
-    holder.model = None
-    holder.load_error = None  # cleared first; will be set by ensure_loaded
-
-    async def fake_ensure_loaded():
-        holder.load_error = "missing weights"
-
-    monkeypatch.setattr(holder, "ensure_loaded", fake_ensure_loaded)
 
     with TestClient(server["app"]) as client:
+        holder.model = None
+        holder.load_error = None
+
+        async def fake_ensure_loaded():
+            holder.load_error = "missing weights"
+
+        monkeypatch.setattr(holder, "ensure_loaded", fake_ensure_loaded)
+
         with client.websocket_connect("/ws/coach") as ws:
             assert ws.receive_json()["type"] == "loading"
             err = ws.receive_json()
@@ -441,3 +458,43 @@ def test_pcm_bytes_to_dbfs_empty():
     dbfs, dur = srv._pcm_bytes_to_dbfs(b"")
     assert dur == 0.0
     assert dbfs == -math.inf
+
+
+def test_ws_coach_says_rest_ends_session(server):
+    """When the model returns next_action='rest', the server should end the
+    session even without an explicit 'rest' command from the client."""
+    server["state"]["responses"] = [json.dumps({
+        "heard": "tired", "ack": "Take five.",
+        "feedback": "Rest your voice for a bit.",
+        "next_action": "rest",
+        "metrics_observed": {"matched_prompt": True},
+    })]
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
+            ws.receive_json()  # metrics
+            ws.receive_json()  # thinking
+            coach_msg = ws.receive_json()
+            assert coach_msg["next_action"] == "rest"
+            done = ws.receive_json()
+            assert done["type"] == "session_done"
+            assert done["summary"]["rest_called"] is True
+
+
+def test_ws_cactus_reset_exception_is_logged_but_continues(server, monkeypatch):
+    """If cactus_reset raises (e.g. between turns), the loop must keep going."""
+    server["holder"].cactus.cactus_reset.side_effect = RuntimeError("reset boom")
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill
+            ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
+            ws.receive_json()  # metrics
+            ws.receive_json()  # thinking
+            coach_msg = ws.receive_json()
+            # cactus_reset failure is non-fatal — coach response still arrives.
+            assert coach_msg["type"] == "coach"

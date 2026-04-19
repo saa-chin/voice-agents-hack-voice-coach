@@ -28,11 +28,8 @@ for h in list(_log.logging.getLogger("voicecoach").handlers):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Mark tests in test_server.py as needing asyncio."""
-    import pytest
-    for item in items:
-        if "test_server" in item.nodeid:
-            item.add_marker(pytest.mark.asyncio)
+    """No automatic markers — server tests use the sync FastAPI TestClient."""
+    return
 
 
 # Sandbox session logs into a temp dir per pytest invocation so we never

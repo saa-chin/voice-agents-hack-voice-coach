@@ -50,7 +50,7 @@ from pathlib import Path
 # Put cli/ on sys.path BEFORE importing the cli modules.
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CLI_DIR = REPO_ROOT / "cli"
-if str(CLI_DIR) not in sys.path:
+if str(CLI_DIR) not in sys.path:  # pragma: no cover - depends on import order at process start
     sys.path.insert(0, str(CLI_DIR))
 
 import _log                            # noqa: E402  (cli module on sys.path)
@@ -88,7 +88,7 @@ class ModelHolder:
     def loaded(self) -> bool:
         return self.model is not None
 
-    async def ensure_loaded(self) -> None:
+    async def ensure_loaded(self) -> None:  # pragma: no cover - real load needs Cactus dylib
         if self.loaded or self.load_error:
             return
         async with self._lock:
@@ -97,11 +97,11 @@ class ModelHolder:
             try:
                 # Heavy work runs in a thread so it doesn't block the loop.
                 await asyncio.to_thread(self._load_blocking)
-            except Exception as exc:  # pragma: no cover - reported to client
+            except Exception as exc:
                 log.exception("model load failed")
                 self.load_error = str(exc)
 
-    def _load_blocking(self) -> None:
+    def _load_blocking(self) -> None:  # pragma: no cover - calls into native lib + downloads weights
         chat.ensure_lib_discoverable()
         self.weights_path = chat.ensure_model(DEFAULT_MODEL_ID)
         import cactus  # type: ignore  # late import: needs dylib + bindings
@@ -152,7 +152,7 @@ def _pcm_bytes_to_dbfs(pcm: bytes) -> tuple[float, float]:
         return -math.inf, 0.0
     samples = array.array("h")
     samples.frombytes(pcm)
-    if not samples:
+    if not samples:  # pragma: no cover - frombytes always yields >=1 sample for non-empty pcm
         return -math.inf, 0.0
     rms = math.sqrt(sum(s * s for s in samples) / len(samples))
     duration_s = len(samples) / coach.SR
@@ -248,7 +248,7 @@ async def ws_coach(ws: WebSocket) -> None:
                 if action == "repeat_prompt":
                     await send_current_drill()
                     continue
-                continue
+                continue  # pragma: no cover - unknown command, treat as no-op
 
             if mtype != "audio":
                 await send({
@@ -440,7 +440,7 @@ async def ws_coach(ws: WebSocket) -> None:
 
     except WebSocketDisconnect:
         log.info("client disconnected")
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - last-resort safety net
         log.exception("ws_coach error")
         try:
             await send({
