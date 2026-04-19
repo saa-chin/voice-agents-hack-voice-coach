@@ -749,16 +749,22 @@ async def ws_coach(ws: WebSocket) -> None:
             # asyncio.to_thread), so we hop back onto the loop with
             # run_coroutine_threadsafe; doing the WS send directly from
             # the worker thread would race the asyncio writer.
+            #
+            # We stash the returned concurrent.futures.Future so the
+            # main coroutine can `await` its completion AFTER to_thread
+            # returns and BEFORE sending the next step. Without this
+            # the threadsafe-scheduled task may run after our own
+            # `parsing_response` send, and the UI would see steps
+            # arrive out of order (parsing → generating).
             loop = asyncio.get_running_loop()
-            first_token_signalled = False
+            generating_send_future: asyncio.Future | None = None
 
             def progress_collector(text: str, tid: int) -> None:
-                nonlocal first_token_signalled
+                nonlocal generating_send_future
                 collector(text, tid)
-                if first_token_signalled or not text:
+                if generating_send_future is not None or not text:
                     return
-                first_token_signalled = True
-                asyncio.run_coroutine_threadsafe(
+                generating_send_future = asyncio.run_coroutine_threadsafe(
                     send({
                         "type": "thinking",
                         "step": "generating_response",
@@ -803,16 +809,16 @@ async def ws_coach(ws: WebSocket) -> None:
             )
 
             # Two cleanup beats before we move on:
-            # 1. Yield so any `generating_response` frame scheduled from
-            #    the token-callback thread drains BEFORE we send the
-            #    next step (otherwise the UI sees parsing_response, then
-            #    generating_response arrives late and rewinds the
-            #    progress list).
+            # 1. Drain the threadsafe-scheduled `generating_response`
+            #    send (if it fired) so it lands BEFORE the next step.
+            #    Otherwise the UI sees parsing_response then a late
+            #    generating_response and the stepper rewinds.
             # 2. If the model never streamed a token (envelope-only
-            #    completion, no callback fired), emit the frame here so
-            #    the UI still shows the step transition.
-            await asyncio.sleep(0)
-            if not first_token_signalled:
+            #    completion, no callback fired), emit the frame here
+            #    so the UI still shows the step transition.
+            if generating_send_future is not None:
+                await asyncio.wrap_future(generating_send_future)
+            else:
                 await send({
                     "type": "thinking",
                     "step": "generating_response",
