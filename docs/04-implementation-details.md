@@ -143,10 +143,10 @@ Tasks are sized so a small team can execute in parallel. **P0** is required for 
 | # | Status | Task | Owner track | Priority | Est. time | Depends on |
 |---|---|---|---|---|---|---|
 | T01 | ☐ | Add navigation, theme tokens, screen shells (Home, Drill, Summary, History) | Frontend | P0 | 1.5h | — |
-| T02 | ☐ | Install and configure `cactus-react-native`, run `pod install`, verify import on device | Native | P0 | 2h | — |
-| T03 | ☐ | Download Gemma 4 E2B and FunctionGemma 270M weights, bundle or first-launch download | Native | P0 | 1h | T02 |
-| T04 | ☐ | iOS audio capture native module (`AVAudioEngine` → 16 kHz PCM event stream to JS) | Native | P0 | 3h | — |
-| T05 | ☐ | Android audio capture native module (`AudioRecord` parity) | Native | P1 | 3h | — |
+| T02 | ☑ | Install and configure `cactus-react-native`, run `pod install`, verify import on device | Native | P0 | 2h | — |
+| T03 | ◐ | Download Gemma 4 E2B and FunctionGemma 270M weights, bundle or first-launch download | Native | P0 | 1h | T02 |
+| T04 | ◐ | iOS audio capture native module (`AVAudioEngine` → 16 kHz PCM event stream to JS) | Native | P0 | 3h | — |
+| T05 | ◐ | Android audio capture native module (`AudioRecord` parity) | Native | P1 | 3h | — |
 | T06 | ☐ | DSP module: RMS loudness, dBFS → dB SPL calibration helper | Native | P0 | 2h | T04 |
 | T07 | ☐ | DSP module: YIN pitch tracker, voicing flag, semitone range over window | Native | P1 | 3h | T04 |
 | T08 | ☐ | DSP module: syllable-nucleus pace estimator | Native | P2 | 3h | T04 |
@@ -154,7 +154,7 @@ Tasks are sized so a small team can execute in parallel. **P0** is required for 
 | T10 | ☐ | `PitchMeter` React component | Frontend | P1 | 1h | T07 |
 | T11 | ☐ | Drill protocol state machine in `src/drills/` (warm-up → phrases → convo → summary) | Frontend | P0 | 2h | T01 |
 | T12 | ☐ | Phrase content set: 20 functional phrases, 8 warm-up vowels, 10 conversation prompts | Content | P0 | 1h | — |
-| T13 | ☐ | Cactus SDK wrapper: load model, pass audio buffer + system prompt, parse JSON response | Inference | P0 | 2h | T02, T03 |
+| T13 | ◐ | Cactus SDK wrapper: load model, pass audio buffer + system prompt, parse JSON response | Inference | P0 | 2h | T02, T03 |
 | T14 | ☐ | Prompt builder: assemble system prompt with drill context and DSP metrics | Inference | P0 | 1h | T13 |
 | T15 | ☐ | TTS playback wrapper (iOS + Android), barge-in handling | Frontend | P0 | 1h | — |
 | T16 | ☐ | SQLite schema migration, repository functions for `session`, `turn`, `settings` | Storage | P0 | 1.5h | — |
@@ -163,7 +163,7 @@ Tasks are sized so a small team can execute in parallel. **P0** is required for 
 | T19 | ☐ | History screen: list of past sessions, tap to view detail | Frontend | P1 | 1.5h | T16 |
 | T20 | ☐ | FunctionGemma router for "retry / rest / repeat / done" intents from voice | Inference | P1 | 2h | T13 |
 | T21 | ☐ | Accessibility pass: large text mode, high contrast, hit-target sizes, screen reader labels | Frontend | P0 | 1.5h | T01 |
-| T22 | ☐ | Empty / first-run / model-downloading states with a clear progress UI | Frontend | P0 | 1h | T03 |
+| T22 | ☑ | Empty / first-run / model-downloading states with a clear progress UI | Frontend | P0 | 1h | T03 |
 | T23 | ☐ | Cloud (opt-in) weekly PDF report via Gemini — sanitized metrics only | Cloud | P2 | 3h | T16 |
 | T24 | ☐ | Cloud (opt-in) personalized phrase generator via Gemini | Cloud | P2 | 2h | T12 |
 | T25 | ☐ | App icon, splash screen, Home-screen polish | Frontend | P0 | 1h | T01 |
@@ -177,7 +177,7 @@ Quick checklist view, grouped by priority. Tick boxes as work lands.
 **P0 — required for first usable end-to-end build (16 tasks)**
 
 - [ ] T01 — Navigation, theme tokens, screen shells (Home, Drill, Summary, History)
-- [ ] T02 — Install and configure `cactus-react-native`, verify on device
+- [x] T02 — Install and configure `cactus-react-native`, verify on device
 - [ ] T03 — Download Gemma 4 E2B + FunctionGemma 270M weights
 - [ ] T04 — iOS audio capture native module (`AVAudioEngine`)
 - [ ] T06 — DSP: RMS loudness + dBFS → dB SPL calibration
@@ -191,7 +191,7 @@ Quick checklist view, grouped by priority. Tick boxes as work lands.
 - [ ] T17 — Wire drill state machine to Cactus calls and SQLite
 - [ ] T18 — Session summary screen (3 numbers + encouragement + 7-day chart)
 - [ ] T21 — Accessibility pass (large text, contrast, hit targets, screen reader)
-- [ ] T22 — First-run / model-downloading progress UI
+- [x] T22 — First-run / model-downloading progress UI
 - [ ] T25 — App icon, splash screen, Home-screen polish
 
 **P1 — highly desirable (5 tasks)**
