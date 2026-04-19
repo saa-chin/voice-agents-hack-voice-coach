@@ -92,10 +92,44 @@ require_cmd node \
   "Install Node.js >= 22.11 (e.g. 'brew install node' or use nvm)."
 require_cmd npm \
   "npm should ship with Node.js — reinstall Node."
-require_cmd java \
-  "Install a JDK (17 recommended for RN 0.85):" \
-  "  brew install --cask zulu@17     (macOS, recommended)" \
-  "  Then: export JAVA_HOME=\$(/usr/libexec/java_home -v 17)"
+
+# Java check — `command -v java` is NOT enough on macOS, because /usr/bin/java
+# is a stub that only prints "Unable to locate a Java Runtime" when no real
+# JDK is installed. We have to actually invoke `java -version` and confirm it
+# returned a working JDK.
+JAVA_VER_OUT="$(java -version 2>&1 || true)"
+if [[ "$JAVA_VER_OUT" == *"Unable to locate a Java Runtime"* ]] || \
+   [[ "$JAVA_VER_OUT" != *version* ]]; then
+  # Try to auto-discover any installed JDK via macOS's java_home tool.
+  if command -v /usr/libexec/java_home >/dev/null 2>&1; then
+    AUTO_JAVA_HOME="$(/usr/libexec/java_home -v 17 2>/dev/null \
+                   || /usr/libexec/java_home 2>/dev/null \
+                   || true)"
+    if [[ -n "$AUTO_JAVA_HOME" && -x "$AUTO_JAVA_HOME/bin/java" ]]; then
+      export JAVA_HOME="$AUTO_JAVA_HOME"
+      export PATH="$JAVA_HOME/bin:$PATH"
+      JAVA_VER_OUT="$(java -version 2>&1 || true)"
+      info "Found JDK at $JAVA_HOME — using it."
+    fi
+  fi
+fi
+if [[ "$JAVA_VER_OUT" == *"Unable to locate a Java Runtime"* ]] || \
+   [[ "$JAVA_VER_OUT" != *version* ]]; then
+  die "No working Java Runtime found." \
+      "macOS ships a stub at /usr/bin/java that only prints an error until" \
+      "you install a real JDK. React Native 0.85 needs JDK 17." \
+      "" \
+      "Install (macOS, recommended):" \
+      "  brew install --cask zulu@17" \
+      "  export JAVA_HOME=\$(/usr/libexec/java_home -v 17)" \
+      "  echo 'export JAVA_HOME=\$(/usr/libexec/java_home -v 17)' >> ~/.zshrc" \
+      "" \
+      "Or via Android Studio: it bundles a JBR you can use:" \
+      "  export JAVA_HOME=\"/Applications/Android Studio.app/Contents/jbr/Contents/Home\"" \
+      "" \
+      "Then re-run:  ./run-android"
+fi
+ok "java → $(command -v java)"
 
 # Locate Android SDK
 if [[ -z "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
@@ -130,10 +164,14 @@ fi
 ok "adb → $(command -v adb)"
 
 # Java version check (RN 0.85 wants JDK 17+)
-JAVA_MAJOR="$(java -version 2>&1 | awk -F\" '/version/ {split($2,a,"."); print (a[1]=="1"?a[2]:a[1]); exit}')"
-if [[ -n "$JAVA_MAJOR" ]] && (( JAVA_MAJOR < 17 )); then
-  warn "Java $JAVA_MAJOR detected; RN 0.85 expects JDK 17+. Build may fail."
-  warn "Set JAVA_HOME to a JDK 17:  export JAVA_HOME=\$(/usr/libexec/java_home -v 17)"
+JAVA_MAJOR="$(printf '%s\n' "$JAVA_VER_OUT" | awk -F\" '/version/ {split($2,a,"."); print (a[1]=="1"?a[2]:a[1]); exit}')"
+if [[ -n "$JAVA_MAJOR" ]]; then
+  if (( JAVA_MAJOR < 17 )); then
+    warn "Java $JAVA_MAJOR detected; RN 0.85 expects JDK 17+. Build may fail."
+    warn "Switch:  brew install --cask zulu@17 && export JAVA_HOME=\$(/usr/libexec/java_home -v 17)"
+  else
+    ok "Java $JAVA_MAJOR (JAVA_HOME=${JAVA_HOME:-<unset>})"
+  fi
 fi
 
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
