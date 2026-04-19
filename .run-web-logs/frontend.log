@@ -1,9 +1,15 @@
-07:44:22 [types] Generated 0ms
+09:33:14 [types] Generated 1ms
 
- astro  v4.16.19 ready in 360 ms
+ astro  v4.16.19 ready in 206 ms
 
 ┃ Local    http://127.0.0.1:4321/
 
-07:44:22 watching for file changes...
-07:44:23 [200] / 5ms
-07:44:23 [200] / 6ms
+09:33:14 watching for file changes...
+09:33:16 [200] / 4ms
+09:33:16 [200] / 4ms
+09:33:16 [200] / 1ms
+09:33:34 [200] / 3ms
+09:33:49 [200] / 5ms
+09:34:11 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+09:36:01 [watch] /src/components/CoachApp.tsx, /src/styles/global.css
+09:36:35 [200] / 2ms
