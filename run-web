@@ -1,0 +1,344 @@
+#!/usr/bin/env bash
+# run-web — boot the FastAPI backend + Astro frontend for the Voice Coach
+# web app, then open the browser. One command, two processes, clean shutdown.
+#
+# Usage:
+#   ./run-web                     # default: backend 8765, frontend 4321
+#   ./run-web --no-open           # don't open the browser automatically
+#   ./run-web --build             # serve a production build instead of dev mode
+#   ./run-web --backend-port N    # override backend port (default 8765)
+#   ./run-web --frontend-port N   # override frontend port (default 4321)
+#   ./run-web --log-level DEBUG   # bump backend logger verbosity
+#   ./run-web -h | --help         # this help
+#
+# Same env checks as run-cli (cactus, dylib, bindings, model, sounddevice
+# is NOT needed here since the browser does mic capture).
+#
+# Exit codes follow cli/_exit.py — same scheme so wrappers can branch.
+set -u
+set -o pipefail
+
+if [[ -t 1 ]]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GRN=$'\033[32m'
+  YLW=$'\033[33m'; BLU=$'\033[34m'; RST=$'\033[0m'
+else
+  BOLD=""; DIM=""; RED=""; GRN=""; YLW=""; BLU=""; RST=""
+fi
+
+step() { printf "\n${BOLD}${BLU}==>${RST} ${BOLD}%s${RST}\n" "$*"; }
+info() { printf "    ${DIM}%s${RST}\n" "$*"; }
+ok()   { printf "    ${GRN}✓${RST} %s\n" "$*"; }
+warn() { printf "    ${YLW}!${RST} %s\n" "$*"; }
+die() {
+  printf "\n${BOLD}${RED}✗ %s${RST}\n" "$1" >&2
+  shift || true
+  for line in "$@"; do
+    printf "  ${DIM}→${RST} %s\n" "$line" >&2
+  done
+  printf "\n"
+  exit "${EXIT_CODE:-1}"
+}
+
+show_help() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+
+# kill_port <port> — free a TCP port by terminating whatever is listening on it.
+# Tries SIGTERM first, then SIGKILL. No-op if the port is already free or if
+# `lsof` is unavailable. Used to make `run-web` idempotent: leftover backend
+# or Astro processes from a prior aborted run won't block the next launch.
+kill_port() {
+  local port="$1"
+  if ! command -v lsof >/dev/null 2>&1; then
+    warn "lsof not found; cannot auto-free port $port if it's busy"
+    return 0
+  fi
+  local pids
+  pids="$(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -z "$pids" ]]; then
+    return 0
+  fi
+  local pid cmd
+  for pid in $pids; do
+    cmd="$(ps -o comm= -p "$pid" 2>/dev/null | awk '{$1=$1};1' || true)"
+    warn "port $port held by pid=$pid (${cmd:-unknown}) — terminating"
+  done
+  # Graceful first.
+  echo "$pids" | xargs -I{} kill {} 2>/dev/null || true
+  for _ in 1 2 3 4; do
+    sleep 0.15
+    pids="$(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null || true)"
+    [[ -z "$pids" ]] && break
+  done
+  # Force if still hanging on.
+  if [[ -n "$pids" ]]; then
+    echo "$pids" | xargs -I{} kill -9 {} 2>/dev/null || true
+    sleep 0.2
+    pids="$(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null || true)"
+  fi
+  if [[ -n "$pids" ]]; then
+    EXIT_CODE=21 die "Could not free port $port" \
+      "Still held by: $pids" \
+      "Kill manually: kill -9 $pids"
+  fi
+  ok "freed port $port"
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WEB_DIR="$SCRIPT_DIR/web-py"
+BACKEND_DIR="$WEB_DIR/backend"
+FRONTEND_DIR="$WEB_DIR/frontend"
+WEIGHTS_DIR="/opt/homebrew/opt/cactus/libexec/weights"
+MODEL_ID="google/gemma-4-e2b-it"
+
+BACKEND_PORT="${VOICE_COACH_BACKEND_PORT:-8765}"
+FRONTEND_PORT="${VOICE_COACH_FRONTEND_PORT:-4321}"
+OPEN_BROWSER=1
+USE_BUILD=0
+LOG_LEVEL="${VOICE_COACH_LOG_LEVEL:-INFO}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)         show_help ;;
+    --no-open)         OPEN_BROWSER=0; shift ;;
+    --build)           USE_BUILD=1; shift ;;
+    --backend-port)    [[ $# -ge 2 ]] || die "--backend-port requires a value";
+                       BACKEND_PORT="$2"; shift 2 ;;
+    --backend-port=*)  BACKEND_PORT="${1#*=}"; shift ;;
+    --frontend-port)   [[ $# -ge 2 ]] || die "--frontend-port requires a value";
+                       FRONTEND_PORT="$2"; shift 2 ;;
+    --frontend-port=*) FRONTEND_PORT="${1#*=}"; shift ;;
+    --log-level)       [[ $# -ge 2 ]] || die "--log-level requires DEBUG/INFO/WARNING/ERROR";
+                       LOG_LEVEL="$2"; shift 2 ;;
+    --log-level=*)     LOG_LEVEL="${1#*=}"; shift ;;
+    *)                 die "Unknown flag: $1" "Try ./run-web --help" ;;
+  esac
+done
+
+[[ -d "$WEB_DIR" ]] || EXIT_CODE=10 die "web-py/ not found at $WEB_DIR" \
+  "Run this script from the repo root."
+[[ -f "$BACKEND_DIR/app/main.py" ]] || EXIT_CODE=10 die "backend not found" \
+  "Expected: $BACKEND_DIR/app/main.py"
+[[ -f "$FRONTEND_DIR/package.json" ]] || EXIT_CODE=10 die "frontend not found" \
+  "Expected: $FRONTEND_DIR/package.json"
+
+# --- 1. Required tools -----------------------------------------------------
+
+step "Checking required tools"
+
+require_cmd() {
+  local cmd="$1"; shift
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    EXIT_CODE=10 die "Missing required tool: '$cmd'" "$@"
+  fi
+  ok "$cmd → $(command -v "$cmd")"
+}
+
+require_cmd python3.14 \
+  "Install with: brew install python@3.14" \
+  "(Cactus Python bindings ship for 3.14.)"
+require_cmd cactus \
+  "Install with: brew install cactus-compute/cactus/cactus"
+require_cmd node \
+  "Install with: brew install node" \
+  "(Astro requires Node 18.18+)"
+require_cmd npm \
+  "Comes with node — try: brew reinstall node"
+
+CACTUS_PY="/opt/homebrew/lib/python3.14/site-packages/cactus.py"
+[[ -f "$CACTUS_PY" ]] || EXIT_CODE=12 die "Cactus Python bindings missing" \
+  "Expected at: $CACTUS_PY" \
+  "Reinstall: brew reinstall cactus-compute/cactus/cactus"
+ok "cactus.py → $CACTUS_PY"
+
+CACTUS_DYLIB="/opt/homebrew/opt/cactus/lib/libcactus.dylib"
+[[ -f "$CACTUS_DYLIB" ]] || EXIT_CODE=11 die "libcactus.dylib missing" \
+  "Expected at: $CACTUS_DYLIB" \
+  "Reinstall: brew reinstall cactus-compute/cactus/cactus"
+ok "libcactus.dylib → $CACTUS_DYLIB"
+
+EXPECTED_LIB="/opt/homebrew/lib/cactus/build/libcactus.dylib"
+if [[ ! -e "$EXPECTED_LIB" ]]; then
+  mkdir -p "$(dirname "$EXPECTED_LIB")"
+  ln -sf "$CACTUS_DYLIB" "$EXPECTED_LIB"
+  ok "Symlinked $EXPECTED_LIB → $CACTUS_DYLIB"
+fi
+
+# --- 2. Model download -----------------------------------------------------
+
+step "Ensuring chat model present"
+
+MODEL_DIRNAME="$(basename "$MODEL_ID")"
+if [[ -d "$WEIGHTS_DIR/$MODEL_DIRNAME" ]] && \
+   [[ -n "$(ls -A "$WEIGHTS_DIR/$MODEL_DIRNAME" 2>/dev/null || true)" ]]; then
+  ok "$MODEL_ID present"
+else
+  info "First-time download — may take a while."
+  if ! cactus download "$MODEL_ID"; then
+    EXIT_CODE=20 die "cactus download $MODEL_ID failed" \
+      "Check internet, disk space, or HF auth (gated models)."
+  fi
+  ok "Downloaded: $MODEL_DIRNAME"
+fi
+
+# --- 3. Backend Python deps ------------------------------------------------
+
+step "Ensuring backend Python deps (fastapi, uvicorn, websockets)"
+if python3.14 -c "import fastapi, uvicorn, websockets" >/dev/null 2>&1; then
+  ok "fastapi + uvicorn + websockets already installed"
+else
+  info "Installing into python3.14 site-packages…"
+  if ! python3.14 -m pip install --quiet --break-system-packages \
+        -r "$BACKEND_DIR/requirements.txt" >/dev/null 2>&1; then
+    EXIT_CODE=13 die "Failed to install backend deps" \
+      "Try manually: python3.14 -m pip install --break-system-packages -r $BACKEND_DIR/requirements.txt"
+  fi
+  ok "Installed backend deps"
+fi
+
+# --- 4. Frontend Node deps -------------------------------------------------
+
+step "Ensuring frontend Node deps"
+if [[ -d "$FRONTEND_DIR/node_modules" ]] && \
+   [[ -d "$FRONTEND_DIR/node_modules/astro" ]]; then
+  ok "node_modules present"
+else
+  info "Running npm install (first time may take ~30-60s)…"
+  ( cd "$FRONTEND_DIR" && npm install --silent --no-audit --no-fund ) || \
+    EXIT_CODE=13 die "npm install failed in $FRONTEND_DIR" \
+      "Try manually: (cd $FRONTEND_DIR && npm install)"
+  ok "Installed Node deps"
+fi
+
+# --- 5. Build frontend if requested ----------------------------------------
+
+if [[ "$USE_BUILD" -eq 1 ]]; then
+  step "Building frontend (production)"
+  ( cd "$FRONTEND_DIR" && npm run build --silent ) || \
+    EXIT_CODE=20 die "astro build failed"
+  ok "Build complete: $FRONTEND_DIR/dist"
+fi
+
+# --- 6. Start backend + frontend -------------------------------------------
+
+step "Booting backend on http://127.0.0.1:$BACKEND_PORT"
+kill_port "$BACKEND_PORT"
+
+LOG_DIR="$SCRIPT_DIR/.run-web-logs"
+mkdir -p "$LOG_DIR"
+BACKEND_LOG="$LOG_DIR/backend.log"
+FRONTEND_LOG="$LOG_DIR/frontend.log"
+: > "$BACKEND_LOG"
+: > "$FRONTEND_LOG"
+
+(
+  cd "$BACKEND_DIR"
+  VOICE_COACH_LOG_LEVEL="$LOG_LEVEL" \
+    python3.14 -m uvicorn app.main:app \
+      --host 127.0.0.1 \
+      --port "$BACKEND_PORT" \
+      --log-level "$(echo "$LOG_LEVEL" | tr '[:upper:]' '[:lower:]')" \
+      >>"$BACKEND_LOG" 2>&1
+) &
+BACKEND_PID=$!
+ok "backend pid=$BACKEND_PID, log=$BACKEND_LOG"
+
+step "Booting frontend on http://127.0.0.1:$FRONTEND_PORT"
+kill_port "$FRONTEND_PORT"
+if [[ "$USE_BUILD" -eq 1 ]]; then
+  (
+    cd "$FRONTEND_DIR" && \
+      npx --no-install astro preview --host 127.0.0.1 --port "$FRONTEND_PORT" \
+        >>"$FRONTEND_LOG" 2>&1
+  ) &
+else
+  (
+    cd "$FRONTEND_DIR" && \
+      npx --no-install astro dev --host 127.0.0.1 --port "$FRONTEND_PORT" \
+        >>"$FRONTEND_LOG" 2>&1
+  ) &
+fi
+FRONTEND_PID=$!
+ok "frontend pid=$FRONTEND_PID, log=$FRONTEND_LOG"
+
+# Cleanup on exit / Ctrl+C / TERM
+cleanup() {
+  printf "\n${DIM}stopping…${RST}\n"
+  if kill -0 "$BACKEND_PID" 2>/dev/null; then
+    kill "$BACKEND_PID" 2>/dev/null || true
+  fi
+  if kill -0 "$FRONTEND_PID" 2>/dev/null; then
+    kill "$FRONTEND_PID" 2>/dev/null || true
+  fi
+  # Give them a beat to shut down, then escalate.
+  sleep 0.3
+  kill -9 "$BACKEND_PID" 2>/dev/null || true
+  kill -9 "$FRONTEND_PID" 2>/dev/null || true
+  wait 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# --- 7. Wait for both to be reachable --------------------------------------
+
+step "Waiting for services to come up"
+
+wait_url() {
+  local label="$1" url="$2" timeout="$3"
+  local i=0
+  while (( i < timeout )); do
+    if curl -sf -m 1 "$url" >/dev/null 2>&1; then
+      ok "$label ready ($url)"
+      return 0
+    fi
+    if ! kill -0 "$BACKEND_PID" 2>/dev/null && [[ "$label" == backend ]]; then
+      tail -n 30 "$BACKEND_LOG" >&2 || true
+      EXIT_CODE=21 die "Backend exited before becoming ready" \
+        "See full log: $BACKEND_LOG"
+    fi
+    if ! kill -0 "$FRONTEND_PID" 2>/dev/null && [[ "$label" == frontend ]]; then
+      tail -n 30 "$FRONTEND_LOG" >&2 || true
+      EXIT_CODE=21 die "Frontend exited before becoming ready" \
+        "See full log: $FRONTEND_LOG"
+    fi
+    sleep 1
+    ((i++))
+  done
+  EXIT_CODE=21 die "$label did not come up within ${timeout}s" \
+    "tail -n 50 $([[ $label == backend ]] && echo "$BACKEND_LOG" || echo "$FRONTEND_LOG")"
+}
+
+wait_url backend  "http://127.0.0.1:$BACKEND_PORT/health" 30
+wait_url frontend "http://127.0.0.1:$FRONTEND_PORT"       30
+
+# --- 8. Open browser -------------------------------------------------------
+
+URL="http://127.0.0.1:$FRONTEND_PORT"
+if [[ "$OPEN_BROWSER" -eq 1 ]]; then
+  if command -v open >/dev/null 2>&1; then
+    open "$URL"
+    ok "Opened $URL"
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$URL"
+    ok "Opened $URL"
+  else
+    warn "Could not auto-open a browser; visit $URL"
+  fi
+else
+  info "Browser auto-open disabled. Visit $URL"
+fi
+
+step "Voice Coach is live"
+info "  frontend  → $URL"
+info "  backend   → http://127.0.0.1:$BACKEND_PORT  (WS: /ws/coach)"
+info "  logs      → $LOG_DIR"
+info "  Ctrl+C to stop both."
+
+# Stay attached until either child exits, or we're interrupted.
+while kill -0 "$BACKEND_PID" 2>/dev/null && kill -0 "$FRONTEND_PID" 2>/dev/null; do
+  sleep 1
+done
+
+if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+  warn "backend exited unexpectedly — see $BACKEND_LOG"
+fi
+if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
+  warn "frontend exited unexpectedly — see $FRONTEND_LOG"
+fi

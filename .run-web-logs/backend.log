@@ -1,0 +1,6 @@
+INFO:     Started server process [2549]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+22:06:27 INFO  voicecoach.server: loading model from /opt/homebrew/opt/cactus/libexec/weights/gemma-4-e2b-it
+INFO:     127.0.0.1:57817 - "GET /health HTTP/1.1" 200 OK
