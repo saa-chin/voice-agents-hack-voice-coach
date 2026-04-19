@@ -316,6 +316,132 @@ def test_ws_happy_path_first_turn_advance(server):
     assert call["pcm_len"] == 32000
 
 
+def test_ws_thinking_emits_step_sequence(server):
+    """Server must emit a sequence of `thinking` frames (one per beat)
+    so the UI can render a live "what's happening right now" stepper
+    instead of a static `Coach is thinking…` placeholder. Each frame
+    must carry a `step` and a human-readable `label`."""
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
+            ws.receive_json()  # metrics
+
+            steps: list[tuple[str, str]] = []
+            while True:
+                msg = ws.receive_json()
+                if msg["type"] == "thinking":
+                    assert "step" in msg, "every thinking frame must carry a step"
+                    assert msg.get("label"), "every thinking frame must carry a label"
+                    steps.append((msg["step"], msg["label"]))
+                    continue
+                # First non-thinking frame is the coach reply.
+                assert msg["type"] == "coach"
+                break
+
+            # Order is fixed by the server. HAS_SAY is False in this
+            # fixture so synthesizing_voice never fires.
+            assert [s for s, _ in steps] == [
+                "analyzing_audio",
+                "generating_response",
+                "parsing_response",
+            ]
+
+
+def test_ws_thinking_generating_response_fires_even_without_token_stream(
+    server, monkeypatch,
+):
+    """Covers the envelope-only completion path: when the model returns
+    text via the buffer instead of streaming tokens, the server must
+    STILL emit `generating_response` so the UI doesn't skip a step."""
+    from app import main as srv
+
+    canned = json.dumps({
+        "heard": "ah",
+        "ack": "Strong voice.",
+        "feedback": "Same energy on the next one.",
+        "next_action": "advance",
+        "metrics_observed": {"matched_prompt": True, "loudness_ok": True},
+    })
+
+    def fake_audio(_cm, _model, _msgs, _opts, _pcm, _on_token):
+        # Critically: do NOT call _on_token. Return text via the
+        # envelope path the way an older / non-streaming Cactus build
+        # would. The server must still mark `generating_response`.
+        return canned
+
+    monkeypatch.setattr(srv.chat, "_cactus_complete_audio", fake_audio)
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
+            ws.receive_json()  # metrics
+
+            steps = []
+            while True:
+                msg = ws.receive_json()
+                if msg["type"] == "thinking":
+                    steps.append(msg["step"])
+                    continue
+                assert msg["type"] == "coach"
+                break
+            assert "generating_response" in steps
+
+
+def test_ws_thinking_progress_collector_dedups_subsequent_tokens(
+    server, monkeypatch,
+):
+    """The token-callback wrapper must only signal `generating_response`
+    on the FIRST token (and skip empty-string tokens). Without dedup,
+    every streamed chunk would queue a duplicate frame and the UI
+    would see the same step over and over."""
+    from app import main as srv
+
+    canned = json.dumps({
+        "heard": "ah",
+        "ack": "Strong voice.",
+        "feedback": "Same energy on the next one.",
+        "next_action": "advance",
+        "metrics_observed": {"matched_prompt": True, "loudness_ok": True},
+    })
+
+    def fake_audio(_cm, _model, _msgs, _opts, _pcm, on_token):
+        # Empty token first (must be ignored), then real chunks. Any
+        # of these would re-trigger the signal without dedup logic.
+        on_token("", 0)
+        on_token(canned[:10], 1)
+        on_token(canned[10:], 2)
+        return ""
+
+    monkeypatch.setattr(srv.chat, "_cactus_complete_audio", fake_audio)
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
+            ws.receive_json()  # metrics
+
+            generating_count = 0
+            while True:
+                msg = ws.receive_json()
+                if msg["type"] == "thinking":
+                    if msg["step"] == "generating_response":
+                        generating_count += 1
+                    continue
+                assert msg["type"] == "coach"
+                break
+            # Exactly one `generating_response` frame regardless of
+            # how many tokens streamed.
+            assert generating_count == 1
+
+
 def test_ws_retry_action_resends_same_drill(server):
     server["state"]["responses"] = [
         # First attempt: patient mumbled — model honestly reports it
