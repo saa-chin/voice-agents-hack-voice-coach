@@ -138,33 +138,35 @@ stateDiagram-v2
 
 Tasks are sized so a small team can execute in parallel. **P0** is required for the first usable end-to-end build. **P1** is highly desirable. **P2** is stretch.
 
-| # | ✓ | Task | Owner track | Priority | Est. time | Depends on |
+> Status legend: ☐ not started · ◐ in progress · ☑ done. Edit the glyph in place to update.
+
+| # | Status | Task | Owner track | Priority | Est. time | Depends on |
 |---|---|---|---|---|---|---|
-| T01 | [ ] | Add navigation, theme tokens, screen shells (Home, Drill, Summary, History) | Frontend | P0 | 1.5h | — |
-| T02 | [ ] | Install and configure `cactus-react-native`, run `pod install`, verify import on device | Native | P0 | 2h | — |
-| T03 | [ ] | Download Gemma 4 E2B and FunctionGemma 270M weights, bundle or first-launch download | Native | P0 | 1h | T02 |
-| T04 | [ ] | iOS audio capture native module (`AVAudioEngine` → 16 kHz PCM event stream to JS) | Native | P0 | 3h | — |
-| T05 | [ ] | Android audio capture native module (`AudioRecord` parity) | Native | P1 | 3h | — |
-| T06 | [ ] | DSP module: RMS loudness, dBFS → dB SPL calibration helper | Native | P0 | 2h | T04 |
-| T07 | [ ] | DSP module: YIN pitch tracker, voicing flag, semitone range over window | Native | P1 | 3h | T04 |
-| T08 | [ ] | DSP module: syllable-nucleus pace estimator | Native | P2 | 3h | T04 |
-| T09 | [ ] | `LoudnessMeter` React component (animated bar, target line, accessible) | Frontend | P0 | 1.5h | T06 |
-| T10 | [ ] | `PitchMeter` React component | Frontend | P1 | 1h | T07 |
-| T11 | [ ] | Drill protocol state machine in `src/drills/` (warm-up → phrases → convo → summary) | Frontend | P0 | 2h | T01 |
-| T12 | [ ] | Phrase content set: 20 functional phrases, 8 warm-up vowels, 10 conversation prompts | Content | P0 | 1h | — |
-| T13 | [ ] | Cactus SDK wrapper: load model, pass audio buffer + system prompt, parse JSON response | Inference | P0 | 2h | T02, T03 |
-| T14 | [ ] | Prompt builder: assemble system prompt with drill context and DSP metrics | Inference | P0 | 1h | T13 |
-| T15 | [ ] | TTS playback wrapper (iOS + Android), barge-in handling | Frontend | P0 | 1h | — |
-| T16 | [ ] | SQLite schema migration, repository functions for `session`, `turn`, `settings` | Storage | P0 | 1.5h | — |
-| T17 | [ ] | Wire drill state machine to Cactus calls and SQLite writes | Inference | P0 | 2h | T11, T13, T16 |
-| T18 | [ ] | Session summary screen: 3 numbers + 1 encouragement + 7-day mini-chart | Frontend | P0 | 2h | T16 |
-| T19 | [ ] | History screen: list of past sessions, tap to view detail | Frontend | P1 | 1.5h | T16 |
-| T20 | [ ] | FunctionGemma router for "retry / rest / repeat / done" intents from voice | Inference | P1 | 2h | T13 |
-| T21 | [ ] | Accessibility pass: large text mode, high contrast, hit-target sizes, screen reader labels | Frontend | P0 | 1.5h | T01 |
-| T22 | [ ] | Empty / first-run / model-downloading states with a clear progress UI | Frontend | P0 | 1h | T03 |
-| T23 | [ ] | Cloud (opt-in) weekly PDF report via Gemini — sanitized metrics only | Cloud | P2 | 3h | T16 |
-| T24 | [ ] | Cloud (opt-in) personalized phrase generator via Gemini | Cloud | P2 | 2h | T12 |
-| T25 | [ ] | App icon, splash screen, Home-screen polish | Frontend | P0 | 1h | T01 |
+| T01 | ☐ | Add navigation, theme tokens, screen shells (Home, Drill, Summary, History) | Frontend | P0 | 1.5h | — |
+| T02 | ☐ | Install and configure `cactus-react-native`, run `pod install`, verify import on device | Native | P0 | 2h | — |
+| T03 | ☐ | Download Gemma 4 E2B and FunctionGemma 270M weights, bundle or first-launch download | Native | P0 | 1h | T02 |
+| T04 | ☐ | iOS audio capture native module (`AVAudioEngine` → 16 kHz PCM event stream to JS) | Native | P0 | 3h | — |
+| T05 | ☐ | Android audio capture native module (`AudioRecord` parity) | Native | P1 | 3h | — |
+| T06 | ☐ | DSP module: RMS loudness, dBFS → dB SPL calibration helper | Native | P0 | 2h | T04 |
+| T07 | ☐ | DSP module: YIN pitch tracker, voicing flag, semitone range over window | Native | P1 | 3h | T04 |
+| T08 | ☐ | DSP module: syllable-nucleus pace estimator | Native | P2 | 3h | T04 |
+| T09 | ☐ | `LoudnessMeter` React component (animated bar, target line, accessible) | Frontend | P0 | 1.5h | T06 |
+| T10 | ☐ | `PitchMeter` React component | Frontend | P1 | 1h | T07 |
+| T11 | ☐ | Drill protocol state machine in `src/drills/` (warm-up → phrases → convo → summary) | Frontend | P0 | 2h | T01 |
+| T12 | ☐ | Phrase content set: 20 functional phrases, 8 warm-up vowels, 10 conversation prompts | Content | P0 | 1h | — |
+| T13 | ☐ | Cactus SDK wrapper: load model, pass audio buffer + system prompt, parse JSON response | Inference | P0 | 2h | T02, T03 |
+| T14 | ☐ | Prompt builder: assemble system prompt with drill context and DSP metrics | Inference | P0 | 1h | T13 |
+| T15 | ☐ | TTS playback wrapper (iOS + Android), barge-in handling | Frontend | P0 | 1h | — |
+| T16 | ☐ | SQLite schema migration, repository functions for `session`, `turn`, `settings` | Storage | P0 | 1.5h | — |
+| T17 | ☐ | Wire drill state machine to Cactus calls and SQLite writes | Inference | P0 | 2h | T11, T13, T16 |
+| T18 | ☐ | Session summary screen: 3 numbers + 1 encouragement + 7-day mini-chart | Frontend | P0 | 2h | T16 |
+| T19 | ☐ | History screen: list of past sessions, tap to view detail | Frontend | P1 | 1.5h | T16 |
+| T20 | ☐ | FunctionGemma router for "retry / rest / repeat / done" intents from voice | Inference | P1 | 2h | T13 |
+| T21 | ☐ | Accessibility pass: large text mode, high contrast, hit-target sizes, screen reader labels | Frontend | P0 | 1.5h | T01 |
+| T22 | ☐ | Empty / first-run / model-downloading states with a clear progress UI | Frontend | P0 | 1h | T03 |
+| T23 | ☐ | Cloud (opt-in) weekly PDF report via Gemini — sanitized metrics only | Cloud | P2 | 3h | T16 |
+| T24 | ☐ | Cloud (opt-in) personalized phrase generator via Gemini | Cloud | P2 | 2h | T12 |
+| T25 | ☐ | App icon, splash screen, Home-screen polish | Frontend | P0 | 1h | T01 |
 
 **P0 total: ~26 hours of focused engineering work, parallelizable across two people.**
 
@@ -206,7 +208,69 @@ Quick checklist view, grouped by priority. Tick boxes as work lands.
 - [ ] T23 — Cloud weekly PDF report via Gemini (opt-in)
 - [ ] T24 — Cloud personalized phrase generator via Gemini (opt-in)
 
-## 7. Build and run
+## 7. Supporting work tracks (clinical, content, design, ops)
+
+The engineering tasks above are necessary but not sufficient. The app's value depends on clinically defensible targets, well-written prompts, plain-language copy, and real conversations with patients, caregivers, and SLPs. These tracks run in parallel with engineering and feed into it.
+
+| # | Status | Task | Track | Priority | Est. time | Feeds into |
+|---|---|---|---|---|---|---|
+| R01 | ☐ | Literature review on motor speech therapy (LSVT LOUD, SPEAK OUT!, evidence on loudness-led approaches) → write a 1-page summary with citations | Clinical | P0 | 4h | T11, T14 |
+| R02 | ☐ | Defensible default targets: loudness in dB SPL, pitch range in semitones, pace in syllables/sec — by drill type and severity tier | Clinical | P0 | 2h | T06, T14, T17 |
+| R03 | ☐ | Microphone/SPL calibration table: measure 3+ phones at 30 cm against a reference SPL meter, produce offset constants | Research | P0 | 3h | T06 |
+| R04 | ☐ | Recruit 2–3 SLP advisors for a 30-min protocol review; capture written feedback | Clinical | P0 | 4h (calendar: 1 week) | T11, R10 |
+| R05 | ☐ | Recruit 5 participants (PD and/or post-stroke) for 15-min usability sessions on a TestFlight build | Research | P1 | 6h (calendar: 2 weeks) | T18, T21 |
+| R06 | ☐ | Caregiver interviews: 3 short calls on at-home practice barriers and what "helpful" looks like | Research | P1 | 3h | T18, R12 |
+| R07 | ☐ | Competitive landscape one-pager (SmallTalk, Constant Therapy, Tactus, Voice Aerobics, generic loudness apps) — what we do differently | Research | P1 | 3h | Positioning, R16 |
+| R08 | ☐ | Functional phrase library: 20 phrases × 5 daily-life categories (greetings, café/restaurant, pharmacy, family, safety) | Content | P0 | 3h | T12 |
+| R09 | ☐ | Warm-up set: 8 sustained vowels + 6 carrier phrases with marked stress patterns | Content | P0 | 1.5h | T12 |
+| R10 | ☐ | Conversation prompts across 3 difficulty tiers (one-word answer, full sentence, multi-turn) — 10 each | Content | P0 | 2h | T12 |
+| R11 | ☐ | Coach voice & tone style guide (warm, specific, never patronizing) — 2 pages with do/don't and 20 sample lines | Copy | P0 | 3h | T14, T15 |
+| R12 | ☐ | Encouragement copy library: 30 ack variants + 30 feedback variants, calibrated to never overclaim or sound clinical | Copy | P0 | 2h | T14, T18 |
+| R13 | ☐ | Onboarding copy: 3 screens at a 6th-grade reading level, including consent for local audio processing | Copy | P0 | 2h | T22 |
+| R14 | ☐ | Plain-language safety disclaimer and "not a medical device" framing, reviewed by an SLP advisor | Compliance | P0 | 2h | T22, R04 |
+| R15 | ☐ | Privacy policy + in-app data disclosure (local-first by default, explicit opt-in for cloud) | Compliance | P0 | 3h | T22 |
+| R16 | ☐ | App Store and Play Store listing copy + screenshot storyboard (5 screens, captions, accessible alt text) | Marketing | P1 | 3h | T25 |
+| R17 | ☐ | 90-second demo script with an explicit airplane-mode beat to prove on-device inference | Marketing | P0 | 1h | T25 |
+| R18 | ☐ | Brand pass: name lock, low-vision-friendly palette (≥7:1 contrast on key surfaces), logo brief | Design | P0 | 3h | T01, T25 |
+| R19 | ☐ | WCAG 2.2 AA checklist mapped to each RN screen, with pass/fail per criterion | Design | P0 | 2h | T21 |
+| R20 | ☐ | One-page consent form for in-person user testing (plain language, no jargon) | Compliance | P1 | 1h | R05 |
+| R21 | ☐ | Recruitment outreach plan: PD support groups, stroke recovery communities, local SLP clinics — message templates + target list | Ops | P1 | 2h | R04, R05, R06 |
+| R22 | ☐ | Post-MVP feature shortlist synthesized from R04–R06 interviews; ranked by impact vs effort | Research | P2 | 2h | Roadmap |
+
+### Supporting tracks — progress checklist
+
+**P0 — must land alongside the MVP build (12 tasks)**
+
+- [ ] R01 — Motor speech therapy literature review (LSVT LOUD, SPEAK OUT!)
+- [ ] R02 — Defensible default targets per drill and severity tier
+- [ ] R03 — Microphone / dB SPL calibration table (3+ phones)
+- [ ] R04 — Recruit 2–3 SLP advisors and run protocol review
+- [ ] R08 — Functional phrase library (20 × 5 categories)
+- [ ] R09 — Warm-up vowels + carrier phrases with stress marks
+- [ ] R10 — Conversation prompts across 3 difficulty tiers
+- [ ] R11 — Coach voice & tone style guide
+- [ ] R12 — Encouragement copy library (ack + feedback variants)
+- [ ] R13 — Onboarding copy at 6th-grade reading level
+- [ ] R14 — Safety disclaimer and "not a medical device" framing
+- [ ] R15 — Privacy policy + in-app data disclosure
+- [ ] R17 — 90-second demo script with airplane-mode proof
+- [ ] R18 — Brand: name, low-vision palette, logo brief
+- [ ] R19 — WCAG 2.2 AA checklist per screen
+
+**P1 — strongly recommended (5 tasks)**
+
+- [ ] R05 — 5-participant usability sessions on TestFlight
+- [ ] R06 — Caregiver interviews (×3)
+- [ ] R07 — Competitive landscape one-pager
+- [ ] R16 — App Store / Play Store listing copy + screenshot storyboard
+- [ ] R20 — Plain-language consent form for user testing
+- [ ] R21 — Recruitment outreach plan + message templates
+
+**P2 — stretch (1 task)**
+
+- [ ] R22 — Post-MVP feature shortlist from interview synthesis
+
+## 8. Build and run
 
 ```bash
 git clone <this-repo>
@@ -218,7 +282,7 @@ npm run ios       # or: npm run android
 
 The first launch downloads Gemma 4 E2B (~1.6 GB, INT4) and FunctionGemma 270M (~150 MB) and caches them under the app's documents directory. Subsequent launches are instant.
 
-## 8. How to verify the implementation
+## 9. How to verify the implementation
 
 A reviewer with a build of the app on a physical device can confirm the architectural claims in under a minute:
 
