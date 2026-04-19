@@ -20,19 +20,26 @@ import { NitroModules } from 'react-native-nitro-modules';
 import AudioRecord from 'react-native-audio-record';
 import { Buffer } from 'buffer';
 
-// Single-model pipeline: Gemma 4 handles audio understanding directly — per
-// the Cactus blog, the audio conformer feeds the same residual stream as text,
-// so streamTranscribe routes PCM chunks straight into Gemma's audio path.
-// https://docs.cactuscompute.com/latest/blog/gemma4/
+// Single-model pipeline: Gemma 4 reasons over audio directly (no whisper
+// step). https://docs.cactuscompute.com/latest/blog/gemma4/
 //
-// We use the STT hook because cactus-react-native v1.13.0 doesn't yet expose
-// audio input on CactusLM. The streaming API
-// (streamTranscribeStart/Process/Stop) is model-agnostic and works with any
-// model the engine has loaded.
+// Streaming approach: rolling-window batch transcription.
+// We *don't* use Cactus's streamTranscribeProcess — that's a whisper-style
+// LocalAgreement loop that accumulates audio internally and re-decodes the
+// whole growing buffer on every call. Gemma's audio encoder isn't built for
+// that and OOMs (malloc fail) after ~10-20s on iPhone.
+//
+// Instead: keep recording into a JS-side ring buffer, and every
+// TRANSCRIBE_INTERVAL_MS fire one stateless `transcribe()` call on the most
+// recent MAX_WINDOW_S of audio. Per the blog, Gemma 4 does 30s of audio in
+// ~0.3s on M-series ARM, so this stays well under realtime.
 const MODEL_SLUG = 'gemma-4-e2b-it';
 const QUANT: 'int4' | 'int8' = 'int4';
 const INTERNAL_NAME = `${MODEL_SLUG}-${QUANT}`;
 const WEIGHTS_URL = `https://huggingface.co/Cactus-Compute/gemma-4-E2B-it/resolve/v1.13/weights/${INTERNAL_NAME}.zip`;
+
+const VOICE_PROMPT =
+  'Transcribe the audio verbatim. Output only the spoken words, exactly as heard. No commentary, no analysis, no extra text.';
 
 const RECORD_OPTIONS = {
   sampleRate: 16000,
@@ -42,9 +49,13 @@ const RECORD_OPTIONS = {
   wavFile: 'voice-coach-clip.wav',
 };
 
-// Stream chunking: 16kHz mono 16-bit = 32000 bytes/s. We flush every ~2s of
-// audio, which matches Cactus's default minChunkSize (32000 samples).
-const CHUNK_BYTES = 64000;
+const SAMPLE_RATE = 16000;
+const BYTES_PER_SAMPLE = 2;
+const BYTES_PER_SECOND = SAMPLE_RATE * BYTES_PER_SAMPLE; // 32000
+
+const TRANSCRIBE_INTERVAL_MS = 1500; // re-transcribe rolling window this often
+const MAX_WINDOW_S = 20; // cap context to last 20s to keep latency bounded
+const MIN_WINDOW_BYTES = BYTES_PER_SECOND; // need >=1s before first pass
 
 type CactusFS = {
   modelExists(model: string): Promise<boolean>;
@@ -88,39 +99,21 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
   const [modelReady, setModelReady] = useState(false);
 
   const [isRecording, setIsRecording] = useState(false);
+  const [transcript, setTranscript] = useState('');
+  const [lastLatencyMs, setLastLatencyMs] = useState<number | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [diag, setDiag] = useState<string>('');
 
   const recorderReady = useRef(false);
   const recordStartedAt = useRef<number>(0);
   const pcmBytes = useRef<number[]>([]);
-  const totalBytes = useRef<number>(0);
-  const flushingRef = useRef(false);
-  const streamingRef = useRef(false);
+  const transcribingRef = useRef(false);
+  const isRecordingRef = useRef(false);
   const sttRef = useRef(stt);
 
   useEffect(() => {
     sttRef.current = stt;
   }, [stt]);
-
-  // Pull a chunk off the buffer and feed it to the streaming engine. Drops
-  // calls if a previous flush is still mid-inference (back-pressure).
-  const tryFlush = async (force: boolean) => {
-    if (!streamingRef.current) return;
-    if (flushingRef.current) return;
-    const have = pcmBytes.current.length;
-    if (!force && have < CHUNK_BYTES) return;
-    if (have === 0) return;
-    flushingRef.current = true;
-    const chunk = pcmBytes.current.splice(0, have);
-    try {
-      await sttRef.current.streamTranscribeProcess({ audio: chunk });
-    } catch (err: any) {
-      setLocalError(err?.message ?? 'streamTranscribeProcess failed.');
-    } finally {
-      flushingRef.current = false;
-    }
-  };
 
   useEffect(() => {
     if (!recorderReady.current) {
@@ -130,13 +123,12 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
         for (let i = 0; i < chunk.length; i++) {
           pcmBytes.current.push(chunk[i]);
         }
-        totalBytes.current += chunk.length;
-        tryFlush(false);
       });
       recorderReady.current = true;
     }
   }, []);
 
+  // Manual Gemma 4 download
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -167,9 +159,47 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
     };
   }, []);
 
+  // Run one transcription pass on the most recent window of audio.
+  const runTranscribePass = async () => {
+    if (transcribingRef.current) return;
+    const buf = pcmBytes.current;
+    if (buf.length < MIN_WINDOW_BYTES) return;
+
+    const maxBytes = MAX_WINDOW_S * BYTES_PER_SECOND;
+    const start = Math.max(0, buf.length - maxBytes);
+    // Snapshot via slice so the buffer can keep growing during inference.
+    const window = buf.slice(start);
+
+    transcribingRef.current = true;
+    const t0 = Date.now();
+    try {
+      const result = await sttRef.current.transcribe({
+        audio: window,
+        prompt: VOICE_PROMPT,
+        options: { useVad: true, maxTokens: 256, temperature: 0.0 },
+      });
+      const text = (result.response ?? '').trim();
+      if (text) setTranscript(text);
+      setLastLatencyMs(Date.now() - t0);
+    } catch (err: any) {
+      setLocalError(err?.message ?? 'transcribe() failed.');
+    } finally {
+      transcribingRef.current = false;
+    }
+  };
+
+  // Drive the rolling-window passes while recording.
+  useEffect(() => {
+    if (!isRecording) return;
+    const id = setInterval(runTranscribePass, TRANSCRIBE_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [isRecording]);
+
   const handleStart = async () => {
     setLocalError(null);
     setDiag('');
+    setTranscript('');
+    setLastLatencyMs(null);
     if (!modelReady) {
       Alert.alert('Gemma 4 not ready', 'Wait for weights to finish downloading.');
       return;
@@ -181,49 +211,36 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
     }
     try {
       pcmBytes.current = [];
-      totalBytes.current = 0;
-      flushingRef.current = false;
-
-      await stt.streamTranscribeStart({
-        confirmationThreshold: 0.85,
-        minChunkSize: 32000,
-        language: 'en',
-      });
-      streamingRef.current = true;
-
+      transcribingRef.current = false;
       AudioRecord.start();
       recordStartedAt.current = Date.now();
+      isRecordingRef.current = true;
       setIsRecording(true);
     } catch (err: any) {
-      streamingRef.current = false;
-      setLocalError(err?.message ?? 'Failed to start streaming.');
+      setLocalError(err?.message ?? 'Failed to start recording.');
     }
   };
 
   const handleStop = async () => {
     try {
       await AudioRecord.stop();
-      const durationMs = Date.now() - recordStartedAt.current;
+      isRecordingRef.current = false;
       setIsRecording(false);
 
-      // Wait for any in-flight chunk, then flush whatever's left.
-      while (flushingRef.current) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      await tryFlush(true);
-      while (flushingRef.current) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-
-      streamingRef.current = false;
-      await stt.streamTranscribeStop();
-
+      const durationMs = Date.now() - recordStartedAt.current;
+      const totalBytes = pcmBytes.current.length;
       setDiag(
-        `bytes=${totalBytes.current} samples=${totalBytes.current / 2} dur=${durationMs}ms`,
+        `bytes=${totalBytes} samples=${totalBytes / 2} dur=${durationMs}ms`,
       );
+
+      // One final pass on the full buffer (cap at MAX_WINDOW_S) so the user
+      // sees the cleanest version once we're done.
+      while (transcribingRef.current) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      await runTranscribePass();
     } catch (err: any) {
-      streamingRef.current = false;
-      setLocalError(err?.message ?? 'Failed to stop streaming.');
+      setLocalError(err?.message ?? 'Failed to stop recording.');
     }
   };
 
@@ -241,15 +258,12 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
     downloadProgress,
     modelReady,
     isRecording,
-    isStreamTranscribing: stt.isStreamTranscribing,
+    transcribing: transcribingRef.current,
     error: stt.error ?? localError,
   });
 
   const micDisabled = !modelReady || downloading;
-
-  const confirmed = stt.streamTranscribeConfirmed;
-  const pending = stt.streamTranscribePending;
-  const hasText = (confirmed + pending).trim().length > 0;
+  const hasText = transcript.length > 0;
 
   return (
     <View
@@ -265,7 +279,7 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
       <View style={styles.header}>
         <Text style={[styles.title, { color: palette.text }]}>AI Voice Coach</Text>
         <Text style={[styles.subtitle, { color: palette.muted }]}>
-          {MODEL_SLUG} ({QUANT}) · streaming on-device
+          {MODEL_SLUG} ({QUANT}) · rolling-window streaming
         </Text>
       </View>
 
@@ -282,15 +296,17 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
         >
           <Text style={[styles.cardLabel, { color: palette.muted }]}>Live Transcript</Text>
           {hasText ? (
-            <Text style={[styles.cardBody, { color: palette.text }]}>
-              <Text>{confirmed}</Text>
-              <Text style={{ color: palette.muted }}>{pending}</Text>
-            </Text>
+            <Text style={[styles.cardBody, { color: palette.text }]}>{transcript}</Text>
           ) : (
             <Text style={[styles.cardBody, { color: palette.muted }]}>
               {isRecording ? 'Listening… speak now' : 'Tap mic and speak.'}
             </Text>
           )}
+          {lastLatencyMs != null ? (
+            <Text style={[styles.latency, { color: palette.muted }]}>
+              last pass: {lastLatencyMs}ms
+            </Text>
+          ) : null}
         </View>
 
         {(stt.error || localError) ? (
@@ -350,7 +366,7 @@ type StatusInput = {
   downloadProgress: number;
   modelReady: boolean;
   isRecording: boolean;
-  isStreamTranscribing: boolean;
+  transcribing: boolean;
   error: string | null;
 };
 
@@ -364,7 +380,7 @@ function describeStatus(s: StatusInput): { label: string; tone: 'info' | 'error'
   }
   if (!s.modelReady) return { label: 'Preparing Gemma 4…', tone: 'info' };
   if (s.isRecording) return { label: 'Streaming…', tone: 'info' };
-  if (s.isStreamTranscribing) return { label: 'Finalizing…', tone: 'info' };
+  if (s.transcribing) return { label: 'Finalizing…', tone: 'info' };
   return { label: 'Ready', tone: 'info' };
 }
 
@@ -407,6 +423,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   cardBody: { fontSize: 16, lineHeight: 23 },
+  latency: { marginTop: 8, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   diagBox: {
     marginTop: 4,
     padding: 12,

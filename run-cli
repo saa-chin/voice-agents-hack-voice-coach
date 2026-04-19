@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# run-cli — launch the on-device Cactus chat REPL.
+#
+# Usage:
+#   ./run-cli                      # run with default (already-downloaded) model
+#   ./run-cli --model <hf/id>      # use a different model (downloads if missing)
+#   ./run-cli --system "..."       # override system prompt
+#   ./run-cli -- --temperature 0.2 # pass extra args straight to chat.py
+#   ./run-cli --list-models        # list locally downloaded model weights
+#   ./run-cli -h | --help          # show this help
+#
+# Verifies tools, then execs cli/chat.py via python3.14.
+
+set -u
+set -o pipefail
+
+if [[ -t 1 ]]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GRN=$'\033[32m'
+  YLW=$'\033[33m'; BLU=$'\033[34m'; RST=$'\033[0m'
+else
+  BOLD=""; DIM=""; RED=""; GRN=""; YLW=""; BLU=""; RST=""
+fi
+
+step() { printf "\n${BOLD}${BLU}==>${RST} ${BOLD}%s${RST}\n" "$*"; }
+info() { printf "    ${DIM}%s${RST}\n" "$*"; }
+ok()   { printf "    ${GRN}✓${RST} %s\n" "$*"; }
+warn() { printf "    ${YLW}!${RST} %s\n" "$*"; }
+die() {
+  printf "\n${BOLD}${RED}✗ %s${RST}\n" "$1" >&2
+  shift || true
+  for line in "$@"; do
+    printf "  ${DIM}→${RST} %s\n" "$line" >&2
+  done
+  printf "\n"
+  exit 1
+}
+
+show_help() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLI_DIR="$SCRIPT_DIR/cli"
+CHAT_PY="$CLI_DIR/chat.py"
+WEIGHTS_DIR="/opt/homebrew/opt/cactus/libexec/weights"
+
+[[ -f "$CHAT_PY" ]] || die "Could not find $CHAT_PY" \
+  "Run this script from the repo root."
+
+LIST_MODELS=0
+PASSTHRU=()
+MODEL=""
+SAW_MODEL=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)        show_help ;;
+    --list-models)    LIST_MODELS=1; shift ;;
+    --model)
+      [[ $# -ge 2 ]] || die "--model requires a value (e.g. google/gemma-4-e2b-it)"
+      MODEL="$2"; SAW_MODEL=1; PASSTHRU+=( "--model" "$2" ); shift 2 ;;
+    --model=*)
+      MODEL="${1#*=}"; SAW_MODEL=1; PASSTHRU+=( "--model=${MODEL}" ); shift ;;
+    --)               shift; PASSTHRU+=( "$@" ); break ;;
+    *)                PASSTHRU+=( "$1" ); shift ;;
+  esac
+done
+
+step "Checking required tools"
+
+require_cmd() {
+  local cmd="$1"; shift
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    die "Missing required tool: '$cmd'" "$@"
+  fi
+  ok "$cmd → $(command -v "$cmd")"
+}
+
+require_cmd python3.14 \
+  "Install with: brew install python@3.14" \
+  "(Cactus Python bindings ship for 3.14.)"
+require_cmd cactus \
+  "Install with: brew install cactus-compute/cactus/cactus"
+
+CACTUS_PY="/opt/homebrew/lib/python3.14/site-packages/cactus.py"
+[[ -f "$CACTUS_PY" ]] || die "Cactus Python bindings missing." \
+  "Expected at: $CACTUS_PY" \
+  "Reinstall: brew reinstall cactus-compute/cactus/cactus"
+ok "cactus.py → $CACTUS_PY"
+
+CACTUS_DYLIB="/opt/homebrew/opt/cactus/lib/libcactus.dylib"
+[[ -f "$CACTUS_DYLIB" ]] || die "libcactus.dylib missing." \
+  "Expected at: $CACTUS_DYLIB" \
+  "Reinstall: brew reinstall cactus-compute/cactus/cactus"
+ok "libcactus.dylib → $CACTUS_DYLIB"
+
+step "Available local models"
+if [[ -d "$WEIGHTS_DIR" ]]; then
+  LOCAL_MODELS="$(ls -1 "$WEIGHTS_DIR" 2>/dev/null || true)"
+  if [[ -n "$LOCAL_MODELS" ]]; then
+    printf '%s\n' "$LOCAL_MODELS" | sed 's/^/      • /'
+  else
+    warn "No models downloaded yet."
+    info "Download one: cactus download google/gemma-4-e2b-it"
+  fi
+else
+  warn "Weights dir not found: $WEIGHTS_DIR"
+fi
+
+if [[ "$LIST_MODELS" -eq 1 ]]; then
+  exit 0
+fi
+
+if [[ "$SAW_MODEL" -eq 0 ]]; then
+  if [[ -d "$WEIGHTS_DIR/gemma-4-e2b-it" ]]; then
+    MODEL="google/gemma-4-e2b-it"
+    PASSTHRU=( "--model" "$MODEL" ${PASSTHRU[@]+"${PASSTHRU[@]}"} )
+    info "Using already-downloaded model: $MODEL"
+  else
+    FIRST="$(ls -1 "$WEIGHTS_DIR" 2>/dev/null | head -n1 || true)"
+    if [[ -n "$FIRST" ]]; then
+      MODEL="local/$FIRST"
+      PASSTHRU=( "--model" "$MODEL" ${PASSTHRU[@]+"${PASSTHRU[@]}"} )
+      info "Using already-downloaded model: $FIRST"
+    else
+      warn "No local model — chat.py will download the default (~4 GB)."
+    fi
+  fi
+fi
+
+step "Launching chat REPL"
+info "Commands inside REPL: /reset, /quit"
+exec python3.14 "$CHAT_PY" ${PASSTHRU[@]+"${PASSTHRU[@]}"}
