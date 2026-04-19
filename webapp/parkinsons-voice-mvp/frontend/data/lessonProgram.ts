@@ -1,0 +1,404 @@
+export type LessonPhaseKey = 'warmup' | 'glide' | 'counting' | 'main_task';
+
+export type LessonPhase = {
+  instructions: string;
+  content?: string | string[];
+  duration_sec?: number;
+  repetitions?: number;
+  focus?: string;
+};
+
+export type LessonExercise = {
+  id: string;
+  name: string;
+  phases: Partial<Record<LessonPhaseKey, LessonPhase>>;
+};
+
+export type LessonCategory = {
+  id: string;
+  name: string;
+  goal: string;
+  exercises: LessonExercise[];
+};
+
+export type LessonProgram = {
+  program_name: string;
+  version: string;
+  structure: {
+    default_flow: LessonPhaseKey[];
+  };
+  categories: LessonCategory[];
+};
+
+export const lessonProgram: LessonProgram = {
+  program_name: 'Parkinsons Speech Therapy - Self Guided',
+  version: '1.0',
+  structure: {
+    default_flow: ['warmup', 'glide', 'counting', 'main_task'],
+  },
+  categories: [
+    {
+      id: 'voice_loudness',
+      name: 'Voice Loudness & Breath Support',
+      goal: 'Improve vocal loudness and breath control',
+      exercises: [
+        {
+          id: 'vl_1',
+          name: 'Sustained Vowel Power',
+          phases: {
+            warmup: {
+              instructions: "Take a deep diaphragmatic breath and sustain 'Ahhh'",
+              duration_sec: 5,
+              repetitions: 3,
+            },
+            glide: {
+              instructions: "Glide pitch from low to high to low using 'Ah'",
+              repetitions: 3,
+            },
+            counting: {
+              content: '1 to 10',
+              instructions: 'Count loudly and clearly',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['Ahhhhh'],
+              instructions: 'Hold the vowel loud and steady',
+              focus: 'Breath control and vocal strength',
+              duration_sec: 5,
+              repetitions: 10,
+            },
+          },
+        },
+        {
+          id: 'vl_2',
+          name: 'Loud Word Repetition',
+          phases: {
+            warmup: {
+              instructions: "Deep breath and sustain 'Ah'",
+              repetitions: 3,
+            },
+            glide: {
+              instructions: "Pitch glide using 'Oo'",
+              repetitions: 3,
+            },
+            counting: {
+              content: '1 to 10',
+              instructions: 'Loud voice',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['Hey', 'Stop', 'Hello', 'Yes', 'No'],
+              instructions: 'Say each word loudly with sharp clarity',
+              focus: 'Strong vocal initiation',
+              repetitions: 5,
+            },
+          },
+        },
+        {
+          id: 'vl_3',
+          name: 'Functional Phrases',
+          phases: {
+            warmup: {
+              instructions: "Deep breath + 'Ah'",
+              repetitions: 3,
+            },
+            glide: {
+              instructions: 'Pitch glide',
+              repetitions: 3,
+            },
+            counting: {
+              content: '1-10',
+              instructions: 'Loud',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['I need help', 'Come here please', 'Turn on the light'],
+              instructions: 'Speak loudly as if addressing someone',
+              focus: 'Real-life communication',
+              repetitions: 5,
+            },
+          },
+        },
+        {
+          id: 'vl_4',
+          name: 'Distance Calling',
+          phases: {
+            warmup: {
+              instructions: 'Breath + sustain',
+              repetitions: 3,
+            },
+            glide: {
+              instructions: 'Pitch glide',
+              repetitions: 3,
+            },
+            counting: {
+              content: '1-10',
+              instructions: 'Loud',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['John!', 'Hey!', 'Excuse me!'],
+              instructions: 'Call out as if across a room',
+              focus: 'Projection',
+              repetitions: 10,
+            },
+          },
+        },
+        {
+          id: 'vl_5',
+          name: 'Breath + Sentence',
+          phases: {
+            warmup: {
+              instructions: 'Deep breath',
+              repetitions: 3,
+            },
+            glide: {
+              instructions: 'Pitch glide',
+              repetitions: 3,
+            },
+            counting: {
+              content: '1-10',
+              instructions: 'Loud',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['Good morning everyone'],
+              instructions: 'Say in one breath, loud and clear',
+              focus: 'Breath coordination',
+              repetitions: 10,
+            },
+          },
+        },
+      ],
+    },
+    {
+      id: 'prosody',
+      name: 'Pitch Variation & Prosody',
+      goal: 'Improve expressiveness and reduce monotone speech',
+      exercises: [
+        {
+          id: 'pr_1',
+          name: 'Question vs Statement',
+          phases: {
+            warmup: {
+              instructions: "Sustain 'Ah'",
+              repetitions: 3,
+            },
+            glide: {
+              instructions: 'Pitch glide',
+              repetitions: 3,
+            },
+            counting: {
+              content: '1-10',
+              instructions: 'Loud',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['You are coming.', 'You are coming?'],
+              instructions: 'Change tone for question vs statement',
+              focus: 'Intonation control',
+              repetitions: 10,
+            },
+          },
+        },
+        {
+          id: 'pr_2',
+          name: 'Emotion Expression',
+          phases: {
+            warmup: {
+              instructions: 'Deep breath',
+              repetitions: 3,
+            },
+            glide: {
+              instructions: 'Pitch glide',
+              repetitions: 3,
+            },
+            counting: {
+              content: '1-10',
+              instructions: 'Loud',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['I got a gift!', 'I lost my keys', 'That is amazing'],
+              instructions: 'Say each with different emotions',
+              focus: 'Emotional tone',
+              repetitions: 5,
+            },
+          },
+        },
+      ],
+    },
+    {
+      id: 'articulation',
+      name: 'Articulation & Clarity',
+      goal: 'Improve speech precision',
+      exercises: [
+        {
+          id: 'ar_1',
+          name: 'Pa-Ta-Ka Drill',
+          phases: {
+            warmup: {
+              instructions: 'Deep breath',
+              repetitions: 3,
+            },
+            glide: {
+              instructions: 'Pitch glide',
+              repetitions: 3,
+            },
+            counting: {
+              content: '1-10',
+              instructions: 'Clear speech',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['Pa-Ta-Ka'],
+              instructions: 'Exaggerate mouth movements',
+              focus: 'Tongue and lip coordination',
+              repetitions: 20,
+            },
+          },
+        },
+        {
+          id: 'ar_2',
+          name: 'Minimal Pairs',
+          phases: {
+            warmup: {
+              instructions: 'Breath + sustain',
+              repetitions: 3,
+            },
+            glide: {
+              instructions: 'Pitch glide',
+              repetitions: 3,
+            },
+            counting: {
+              content: '1-10',
+              instructions: 'Clear speech',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['Pat-Bat', 'Ten-Den'],
+              instructions: 'Clearly differentiate sounds',
+              focus: 'Sound precision',
+              repetitions: 10,
+            },
+          },
+        },
+      ],
+    },
+    {
+      id: 'functional',
+      name: 'Functional Speech',
+      goal: 'Apply speech in real-life scenarios',
+      exercises: [
+        {
+          id: 'fn_1',
+          name: 'Word Reading',
+          phases: {
+            warmup: {
+              instructions: 'Deep breath',
+              repetitions: 3,
+            },
+            glide: {
+              instructions: 'Pitch glide',
+              repetitions: 3,
+            },
+            counting: {
+              content: '1-10',
+              instructions: 'Loud',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['cat', 'dog', 'sun', 'book', 'chair'],
+              instructions: 'Read loudly and clearly',
+              focus: 'Clarity and loudness',
+              repetitions: 5,
+            },
+          },
+        },
+        {
+          id: 'fn_2',
+          name: 'Sentence Reading',
+          phases: {
+            warmup: {
+              instructions: 'Deep breath',
+              repetitions: 3,
+            },
+            glide: {
+              instructions: 'Pitch glide',
+              repetitions: 3,
+            },
+            counting: {
+              content: '1-10',
+              instructions: 'Loud',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['The dog runs fast.', 'I like my coffee.', 'It is a sunny day.'],
+              instructions: 'Read clearly with pauses',
+              focus: 'Breath and phrasing',
+              repetitions: 5,
+            },
+          },
+        },
+        {
+          id: 'fn_3',
+          name: 'Spelling Exercise',
+          phases: {
+            warmup: {
+              instructions: 'Deep breath',
+              repetitions: 3,
+            },
+            glide: {
+              instructions: 'Pitch glide',
+              repetitions: 3,
+            },
+            counting: {
+              content: '1-10',
+              instructions: 'Loud',
+              repetitions: 1,
+            },
+            main_task: {
+              content: ['CAT', 'HOUSE', 'WATER', 'PHONE'],
+              instructions: 'Spell each letter clearly',
+              focus: 'Letter articulation',
+              repetitions: 2,
+            },
+          },
+        },
+      ],
+    },
+  ],
+};
+
+export type FlattenedLesson = {
+  categoryId: string;
+  categoryName: string;
+  categoryGoal: string;
+  exercise: LessonExercise;
+};
+
+export const flattenedLessons: FlattenedLesson[] = lessonProgram.categories.flatMap((category) =>
+  category.exercises.map((exercise) => ({
+    categoryId: category.id,
+    categoryName: category.name,
+    categoryGoal: category.goal,
+    exercise,
+  })),
+);
+
+export function getLessonIndexById(lessonId: string) {
+  return flattenedLessons.findIndex((lesson) => lesson.exercise.id === lessonId);
+}
+
+export function getLessonById(lessonId: string) {
+  return flattenedLessons.find((lesson) => lesson.exercise.id === lessonId);
+}
+
+export function getOrderedPhaseKeys(lesson: FlattenedLesson) {
+  const available = Object.keys(lesson.exercise.phases) as LessonPhaseKey[];
+
+  return [
+    ...lessonProgram.structure.default_flow.filter((phaseKey) => available.includes(phaseKey)),
+    ...available.filter((phaseKey) => !lessonProgram.structure.default_flow.includes(phaseKey)),
+  ];
+}
