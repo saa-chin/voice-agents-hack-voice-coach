@@ -35,10 +35,11 @@ const QUANT: 'int4' | 'int8' = 'int4';
 const INTERNAL_NAME = `${MODEL_SLUG}-${QUANT}`;
 const WEIGHTS_URL = `https://huggingface.co/Cactus-Compute/gemma-4-E2B-it/resolve/v1.13/weights/${INTERNAL_NAME}.zip`;
 
-// Gemma 4 uses chat templating natively; we pass a system-style prompt that
-// tells it to listen and reply. The whisper-style prompt tokens don't apply.
+// Transcription-only mode: ask Gemma 4 to output verbatim what it heard, with
+// no commentary, analysis, or reply. Useful for verifying mic + audio pipeline
+// before layering coaching on top.
 const VOICE_PROMPT =
-  'You are a friendly on-device voice coach. Listen to the user and reply concisely (1-3 sentences). Be encouraging and direct.';
+  'Transcribe the audio verbatim. Output only the spoken words, exactly as heard. No commentary, no analysis, no extra text.';
 
 const RECORD_OPTIONS = {
   sampleRate: 16000,
@@ -198,7 +199,7 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
       const result = await stt.transcribe({
         audio: samples,
         prompt: VOICE_PROMPT,
-        options: { useVad: true, maxTokens: 256, temperature: 0.7 },
+        options: { useVad: true, maxTokens: 256, temperature: 0.0 },
       });
       setReply((result.response ?? '').trim() || '(empty response)');
     } catch (err: any) {
@@ -258,20 +259,29 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
             },
           ]}
         >
-          <Text style={[styles.cardLabel, { color: palette.muted }]}>Gemma 4</Text>
+          <Text style={[styles.cardLabel, { color: palette.muted }]}>Transcript</Text>
           <Text style={[styles.cardBody, { color: palette.text }]}>
             {reply ||
               (isThinking
-                ? 'Thinking…'
+                ? 'Transcribing…'
                 : isRecording
                 ? 'Listening…'
                 : 'Tap mic and speak.')}
           </Text>
         </View>
+        {(stt.error || localError) ? (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorLabel}>ERROR</Text>
+            <Text selectable style={styles.errorText}>
+              {stt.error ?? localError}
+            </Text>
+          </View>
+        ) : null}
+
         {diag ? (
           <View style={[styles.diagBox, { borderColor: palette.border, backgroundColor: palette.card }]}>
             <Text style={[styles.diagLabel, { color: palette.muted }]}>MIC DIAGNOSTIC</Text>
-            <Text style={[styles.diag, { color: palette.text }]}>{diag}</Text>
+            <Text selectable style={[styles.diag, { color: palette.text }]}>{diag}</Text>
           </View>
         ) : null}
       </ScrollView>
@@ -308,7 +318,7 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
         </TouchableOpacity>
 
         <Text style={[styles.hint, { color: palette.muted }]}>
-          {isRecording ? 'Tap to stop & ask Gemma' : 'Tap to record'}
+          {isRecording ? 'Tap to stop & transcribe' : 'Tap to record'}
         </Text>
       </View>
     </View>
@@ -348,7 +358,7 @@ function describeStatus(s: StatusInput): { label: string; tone: 'info' | 'error'
     };
   }
   if (!s.modelReady) return { label: 'Preparing Gemma 4…', tone: 'info' };
-  if (s.isThinking) return { label: 'Gemma 4 is thinking…', tone: 'info' };
+  if (s.isThinking) return { label: 'Transcribing…', tone: 'info' };
   if (s.isRecording) return { label: 'Recording…', tone: 'info' };
   return { label: 'Ready', tone: 'info' };
 }
@@ -405,6 +415,26 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   diag: { fontSize: 13, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  errorBox: {
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: '#3a0e0e',
+    borderWidth: 1,
+    borderColor: '#ff6b6b',
+  },
+  errorLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    marginBottom: 6,
+    color: '#ff6b6b',
+  },
+  errorText: {
+    fontSize: 13,
+    color: '#ffd6d6',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    lineHeight: 18,
+  },
   footer: { alignItems: 'center', paddingBottom: 24, paddingTop: 8, gap: 12 },
   statusText: {
     fontSize: 13,

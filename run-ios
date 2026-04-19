@@ -3,13 +3,14 @@
 # physically connected iPhone.
 #
 # Usage:
-#   ./run-ios                 # auto-detect device, build & run
+#   ./run-ios                 # auto-detect device, build & run, then tail logs
 #   ./run-ios --list          # list connected iOS devices and exit
 #   ./run-ios --device "Name" # target a specific device by name or UDID
 #   ./run-ios --release       # build the Release configuration
 #   ./run-ios --clean         # nuke build/, Pods/, and DerivedData first
 #   ./run-ios --skip-pods     # skip `pod install`
 #   ./run-ios --skip-install  # skip `npm install`
+#   ./run-ios --no-logs       # don't tail device logs after launch
 #   ./run-ios -h | --help     # show this help
 #
 # The script does everything end-to-end: tool checks, dep install, pod install,
@@ -46,6 +47,7 @@ LIST_ONLY=0
 CLEAN=0
 SKIP_PODS=0
 SKIP_INSTALL=0
+NO_LOGS=0
 CONFIG="Debug"
 DEVICE=""
 
@@ -58,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --clean)          CLEAN=1; shift ;;
     --skip-pods)      SKIP_PODS=1; shift ;;
     --skip-install)   SKIP_INSTALL=1; shift ;;
+    --no-logs)        NO_LOGS=1; shift ;;
     --release)        CONFIG="Release"; shift ;;
     --device)
       [[ $# -ge 2 ]] || die "--device requires a value (device name or UDID)"
@@ -290,3 +293,18 @@ fi
 step "Done"
 ok "App should now be running on '$DEVICE'."
 info "If the screen is blank, make sure Metro is running: cd mobile && npm start"
+
+# ---------- step 7: stream device logs --------------------------------------
+if [[ "$NO_LOGS" -eq 1 ]]; then
+  exit 0
+fi
+
+step "Streaming device logs (Ctrl-C to stop)"
+info "Filtering for app, Cactus, audio, and errors. Re-run with --no-logs to skip."
+
+# react-native log-ios streams the iOS device syslog. We pipe through grep to
+# surface what's most useful for debugging this app: our bundle, Cactus engine
+# noise, the patched audio recorder, JS console output, and crashes/errors.
+# The `--line-buffered` keeps output flowing in real time.
+LOG_FILTER='AIVoiceCoach|Cactus|RNAudio|AVAudio|nitro|RCTLog|JS log|console\.|fatal|FATAL|exception|Exception|Error|error: |\[error\]|✗'
+( cd "$MOBILE_DIR" && npx react-native log-ios 2>&1 ) | grep -E --line-buffered --color=auto "$LOG_FILTER" || true
