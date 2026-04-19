@@ -11,45 +11,50 @@
 :root {
   color-scheme: light;
 
-  --bg:               #f3f6f5;
-  --bg-grad-1:        rgba(15, 138, 95, 0.10);
-  --bg-grad-2:        rgba(74, 135, 217, 0.08);
-  --bg-grad-3:        rgba(240, 168, 32, 0.06);
+  --bg:               #f4f7f6;
+  --bg-grad-1:        rgba(16, 185, 129, 0.12);
+  --bg-grad-2:        rgba(59, 130, 246, 0.10);
+  --bg-grad-3:        rgba(245, 158, 11, 0.08);
 
-  --surface:          rgba(255, 255, 255, 0.78);
-  --surface-2:        rgba(255, 255, 255, 0.55);
+  --surface:          rgba(255, 255, 255, 0.82);
+  --surface-2:        rgba(255, 255, 255, 0.60);
   --surface-strong:   #ffffff;
-  --surface-inset:    rgba(15, 36, 32, 0.06);
+  --surface-inset:    rgba(15, 23, 42, 0.06);
 
-  --border:           rgba(15, 36, 32, 0.10);
-  --border-strong:    rgba(15, 36, 32, 0.20);
+  --border:           rgba(15, 23, 42, 0.10);
+  --border-strong:    rgba(15, 23, 42, 0.20);
 
-  --text:             #0f2420;
-  --text-muted:       #4b6b63;
-  --text-faint:       #7a8c87;
+  --text:             #0f172a;
+  --text-muted:       #475569;
+  --text-faint:       #94a3b8;
 
-  --accent:           #0f8a5f;
-  --accent-strong:    #0a6b48;
+  /* Accent: emerald-600 is bright + AA-safe on white. */
+  --accent:           #059669;
+  --accent-strong:    #047857;
   --accent-fg:        #ffffff;
-  --accent-soft:      rgba(15, 138, 95, 0.12);
-  --accent-ring:      rgba(15, 138, 95, 0.45);
+  --accent-soft:      rgba(16, 185, 129, 0.18);
+  --accent-ring:      rgba(16, 185, 129, 0.55);
 
-  --warning:          #b87a10;
-  --warning-soft:     rgba(240, 168, 32, 0.18);
+  /* Warning: amber-600 — vivid but readable on white. */
+  --warning:          #d97706;
+  --warning-soft:     rgba(245, 158, 11, 0.22);
 
-  --danger:           #c1373d;
-  --danger-soft:      rgba(220, 80, 88, 0.12);
+  /* Danger: red-600. */
+  --danger:           #dc2626;
+  --danger-soft:      rgba(239, 68, 68, 0.14);
 
-  --info:             #2f6fc7;
-  --info-soft:        rgba(74, 135, 217, 0.14);
+  /* Info: blue-600. */
+  --info:             #2563eb;
+  --info-soft:        rgba(59, 130, 246, 0.16);
 
-  --violet:           #6b5ec4;
-  --violet-soft:      rgba(139, 126, 216, 0.16);
+  /* Violet: violet-600. */
+  --violet:           #7c3aed;
+  --violet-soft:      rgba(139, 92, 246, 0.18);
 
-  --shadow-card:      0 4px 24px rgba(15, 36, 32, 0.08), 0 1px 4px rgba(15, 36, 32, 0.05);
-  --scrollbar-thumb:  rgba(15, 36, 32, 0.20);
-  --selection-bg:     rgba(15, 138, 95, 0.22);
-  --selection-fg:     #0f2420;
+  --shadow-card:      0 4px 24px rgba(15, 23, 42, 0.08), 0 1px 4px rgba(15, 23, 42, 0.05);
+  --scrollbar-thumb:  rgba(15, 23, 42, 0.22);
+  --selection-bg:     rgba(16, 185, 129, 0.24);
+  --selection-fg:     #0f172a;
 }
 
 html.dark {
@@ -160,3 +165,54 @@ button {
 /* ---- glow helpers ---- */
 .glow-accent { box-shadow: 0 0 28px 6px var(--accent-ring); }
 .glow-rose   { box-shadow: 0 0 28px 6px rgba(244, 63, 94, 0.40); }
+
+/* ---- sound-wave bars on the start card ---- */
+@keyframes wave-bar {
+  0%, 100% { transform: scaleY(0.35); }
+  50%      { transform: scaleY(1);    }
+}
+.wave-bar {
+  transform-origin: center;
+  animation: wave-bar 1.1s ease-in-out infinite;
+}
+
+/* ---- ambient floating blobs ---- */
+@keyframes blob-float {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(0, -10px, 0) scale(1.05); }
+}
+.blob-float { animation: blob-float 8s ease-in-out infinite; }
+
+/* ---- subtle shimmer over the primary CTA ---- */
+@keyframes cta-shimmer {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(220%); }
+}
+.cta-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.45) 50%,
+    transparent 70%
+  );
+  transform: translateX(-120%);
+  animation: cta-shimmer 2.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ---- gradient title accent ---- */
+.text-gradient-accent {
+  background: linear-gradient(
+    100deg,
+    var(--accent-strong) 0%,
+    var(--accent) 40%,
+    var(--violet) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}

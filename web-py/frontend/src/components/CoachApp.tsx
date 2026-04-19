@@ -10,7 +10,6 @@ import {
   playWavBase64,
   primeTTS,
   speak,
-  testSpeech,
   type AudioAnalysis,
   type RecognizerHandle,
   type RecorderHandle,
@@ -96,7 +95,6 @@ export default function CoachApp() {
   const [summary, setSummary] = useState<SummaryMsg['summary'] | null>(null);
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [transientError, setTransientError] = useState<string | null>(null);
-  const [wsState, setWsState] = useState<string>('CONNECTING');
   const [autoMode, setAutoMode] = useState(true);
   const [theme, setTheme] = useState<Theme>(readInitialTheme);
   // Live transcript while recording. We update on every recognizer event,
@@ -143,6 +141,13 @@ export default function CoachApp() {
   // Track current phase via ref so async WS handlers don't read stale state.
   const phaseRef = useRef<Phase>('connecting');
   const autoModeRef = useRef(autoMode);
+  // True between clicking "End" and the session truly closing. Suppresses
+  // any in-flight `coach` / `audio_reply` / `drill` / `metrics` / `thinking`
+  // frames the server may still emit while it finishes the model call it
+  // started before the rest command landed — without this, those frames
+  // would yank the UI back to `feedback` and the End button would feel
+  // broken.
+  const endingRef = useRef(false);
   // Forward refs for auto-mode callbacks defined inside `createRecorder` (VAD)
   // and `speak()` (TTS onEnd). Using refs keeps the lambdas stable and avoids
   // closing over stale `phase`/`autoMode` snapshots when async callbacks fire.
@@ -171,7 +176,6 @@ export default function CoachApp() {
     const ws = connect(BACKEND_WS_URL, handleServerMessage, {
       onCloseOrError: ({ code, reason, clean }) => {
         const p = phaseRef.current;
-        setWsState('CLOSED');
         if (p !== 'done' && p !== 'error') {
           setErrMsg(
             `Lost connection to coach server (code ${code}${reason ? `: ${reason}` : ''}${clean ? '' : ', not clean'}).`,
@@ -185,7 +189,6 @@ export default function CoachApp() {
     });
     wsRef.current = ws;
     ws.ready
-      .then(() => setWsState('OPEN'))
       .catch((e) => {
         console.error('[coach] ws.ready rejected', e);
         setErrMsg(
@@ -232,6 +235,7 @@ export default function CoachApp() {
         return;
       }
       case 'drill':
+        if (endingRef.current) return;
         setDrill(msg);
         setMetrics(null);
         setCoach(null);
@@ -255,12 +259,15 @@ export default function CoachApp() {
         });
         return;
       case 'metrics':
+        if (endingRef.current) return;
         setMetrics(msg);
         return;
       case 'thinking':
+        if (endingRef.current) return;
         setPhase('thinking');
         return;
       case 'coach': {
+        if (endingRef.current) return;
         setCoach(msg);
         setPhase('feedback');
         // EXACTLY ONE TTS source. If the backend reported it can
@@ -275,6 +282,7 @@ export default function CoachApp() {
         return;
       }
       case 'audio_reply': {
+        if (endingRef.current) return;
         // Server-rendered TTS arrived. We never queued a browser
         // utterance for this turn (server-tts mode), so there is
         // nothing to cancel — just play the WAV.
@@ -312,9 +320,13 @@ export default function CoachApp() {
         }
         return;
       case 'session_done':
+        // Backend's authoritative summary always wins over any
+        // synthesized one set by the local End handler.
         setSummary(msg.summary);
         setPhase('done');
         cancelSpeech();
+        cancelServerSpeech();
+        endingRef.current = false;
         return;
       case 'error':
         // Non-fatal: server stays connected and may send next drill.
@@ -330,6 +342,7 @@ export default function CoachApp() {
     setSummary(null);
     setErrMsg(null);
     setTransientError(null);
+    endingRef.current = false;
     // Prime the speech engine while we still have a user-gesture context.
     // Subsequent speak() calls from async WS handlers will be allowed.
     primeTTS();
@@ -476,7 +489,62 @@ export default function CoachApp() {
     }
   };
   const skipDrill = () => wsRef.current?.send({ type: 'command', action: 'skip' });
-  const restSession = () => wsRef.current?.send({ type: 'command', action: 'rest' });
+
+  // End the session immediately from the client's perspective. The
+  // backend may still be mid-`asyncio.to_thread(model_call, …)` and
+  // can't honour a `rest` for several seconds; without this fast-path
+  // the user sees no response, then the server's still-in-flight
+  // `coach`/`audio_reply` frames yank the UI back to feedback —
+  // making End feel completely broken. Strategy:
+  //   1. Mark `endingRef = true` so subsequent server frames are
+  //      ignored (see handleServerMessage). Only `session_done` and
+  //      `error` get through.
+  //   2. Tear down all client-side audio (mic, recogniser, voice
+  //      command, browser/server TTS, level timer).
+  //   3. Optimistically transition to the done view with a synthesized
+  //      summary so the user gets instant feedback.
+  //   4. Send `command/rest`. When the real `session_done` arrives,
+  //      it overwrites the placeholder with backend-authoritative data.
+  const restSession = () => {
+    endingRef.current = true;
+    cancelSpeech();
+    cancelServerSpeech();
+    if (recRef.current) {
+      try { recRef.current.cancel(); } catch { /* ignore */ }
+      recRef.current = null;
+    }
+    if (recognizerRef.current) {
+      try { recognizerRef.current.cancel(); } catch { /* ignore */ }
+      recognizerRef.current = null;
+    }
+    if (cmdRecorderRef.current) {
+      try { cmdRecorderRef.current.cancel(); } catch { /* ignore */ }
+      cmdRecorderRef.current = null;
+    }
+    if (cmdTimeoutRef.current !== null) {
+      window.clearTimeout(cmdTimeoutRef.current);
+      cmdTimeoutRef.current = null;
+    }
+    if (levelTimer.current !== null) {
+      window.clearInterval(levelTimer.current);
+      levelTimer.current = null;
+    }
+    setCommandPhase('idle');
+    setTransientError(null);
+    // Best-guess summary from what we know locally. Server's
+    // session_done will replace this with the real numbers.
+    setSummary({
+      advanced: drill?.position ?? 0,
+      total: drill?.total ?? (drill ? 1 : 0),
+      retries: 0,
+      avg_dbfs: null,
+      json_failures: 0,
+      rest_called: true,
+      session_log: '(ending…)',
+    });
+    setPhase('done');
+    wsRef.current?.send({ type: 'command', action: 'rest' });
+  };
 
   // ---- Voice-command channel (Cactus Whisper + FunctionGemma 270M) -------
   //
@@ -612,7 +680,7 @@ export default function CoachApp() {
         (inSession ? 'max-w-6xl' : 'max-w-2xl')
       }
     >
-      <Header wsState={wsState} theme={theme} onToggleTheme={toggleTheme} />
+      <Header theme={theme} onToggleTheme={toggleTheme} />
 
       <section className="flex flex-1 flex-col gap-4">
         {!isTTSAvailable() && (
@@ -622,27 +690,16 @@ export default function CoachApp() {
           </div>
         )}
         {phase === 'connecting' && (
-          <>
-            <StatusCard label="Connecting to local coach…" spinner />
-            <TestVoiceRow />
-          </>
+          <StatusCard label="Connecting to local coach…" spinner />
         )}
         {phase === 'loading' && (
-          <>
-            <StatusCard
-              label="Loading Gemma 4 on your machine…"
-              hint="One-time, takes ~6 seconds. The model never leaves your device."
-              spinner
-            />
-            <TestVoiceRow />
-          </>
+          <StatusCard
+            label="Loading Gemma 4 on your machine…"
+            hint="One-time, takes ~6 seconds. The model never leaves your device."
+            spinner
+          />
         )}
-        {phase === 'ready' && (
-          <>
-            <StartCard onStart={startSession} />
-            <TestVoiceRow />
-          </>
-        )}
+        {phase === 'ready' && <StartCard onStart={startSession} />}
 
         {inSession && drill && (
           <SessionView
@@ -683,20 +740,12 @@ export default function CoachApp() {
 // ---- Sub-components -------------------------------------------------------
 
 function Header({
-  wsState,
   theme,
   onToggleTheme,
 }: {
-  wsState: string;
   theme: Theme;
   onToggleTheme: () => void;
 }) {
-  const dotColor =
-    wsState === 'OPEN'
-      ? 'bg-[var(--accent)] shadow-[0_0_6px_2px_var(--accent-ring)]'
-      : wsState === 'CONNECTING'
-      ? 'bg-[var(--warning)] shadow-[0_0_6px_2px_var(--warning-soft)]'
-      : 'bg-[var(--danger)]';
   return (
     <header className="relative mb-10 flex items-start justify-between gap-3">
       <div>
@@ -708,15 +757,6 @@ function Header({
         </p>
       </div>
       <div className="mt-2 flex items-center gap-2">
-        <div
-          className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-3 py-1.5 text-[10px] uppercase tracking-wider text-[var(--text-muted)] backdrop-blur"
-          title={`WebSocket: ${wsState}`}
-        >
-          <span
-            className={`inline-block h-2 w-2 rounded-full transition ${dotColor}`}
-          />
-          {wsState}
-        </div>
         <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </div>
     </header>
@@ -818,41 +858,154 @@ function StatusCard({
 }
 
 function StartCard({ onStart }: { onStart: () => void }) {
+  // 11 bars, varying max heights + staggered delays so the wave never
+  // looks like a metronome. Heights are %s of the SVG viewport height.
+  const bars = [
+    { h: 30, delay: '0.00s' },
+    { h: 60, delay: '0.10s' },
+    { h: 95, delay: '0.20s' },
+    { h: 75, delay: '0.30s' },
+    { h: 100, delay: '0.40s' },
+    { h: 55, delay: '0.50s' },
+    { h: 85, delay: '0.45s' },
+    { h: 100, delay: '0.35s' },
+    { h: 70, delay: '0.25s' },
+    { h: 50, delay: '0.15s' },
+    { h: 30, delay: '0.05s' },
+  ];
+
+  const steps = [
+    {
+      label: 'Warm up',
+      detail: 'Easy vowels & glides',
+      tone: 'accent' as const,
+    },
+    {
+      label: 'Practice',
+      detail: 'Phrases & counting',
+      tone: 'violet' as const,
+    },
+    {
+      label: 'Converse',
+      detail: 'Real-world prompts',
+      tone: 'warning' as const,
+    },
+  ];
+
   return (
     <div className="card relative overflow-hidden p-10 text-center">
-      <div className="pointer-events-none absolute -left-16 -top-16 h-56 w-56 rounded-full bg-[var(--accent-soft)] blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-16 -right-16 h-56 w-56 rounded-full bg-[var(--violet-soft)] blur-3xl" />
-      <div className="pointer-events-none absolute right-12 top-8 h-28 w-28 rounded-full bg-[var(--warning-soft)] blur-2xl" />
+      {/* ambient floating blobs — gentle vertical drift adds life
+          without distracting from the CTA. */}
+      <div className="blob-float pointer-events-none absolute -left-20 -top-20 h-64 w-64 rounded-full bg-[var(--accent-soft)] blur-3xl" />
+      <div
+        className="blob-float pointer-events-none absolute -bottom-24 -right-20 h-72 w-72 rounded-full bg-[var(--violet-soft)] blur-3xl"
+        style={{ animationDelay: '-3s' }}
+      />
+      <div
+        className="blob-float pointer-events-none absolute right-1/3 top-4 h-32 w-32 rounded-full bg-[var(--warning-soft)] blur-2xl"
+        style={{ animationDelay: '-5s' }}
+      />
 
       <div className="relative">
-        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-3xl ring-1 ring-[var(--accent-ring)]">
-          🎙️
+        {/* Animated waveform stand-in for the old mic glyph. Same
+            silhouette as the live LiveAnalyzer so the start screen
+            previews the experience. */}
+        <div
+          className="mx-auto mb-5 flex h-20 w-44 items-end justify-center gap-1.5 rounded-2xl bg-[var(--accent-soft)] px-5 py-3 ring-1 ring-[var(--accent-ring)]"
+          aria-hidden="true"
+        >
+          {bars.map((b, i) => (
+            <div
+              key={i}
+              className="wave-bar w-1.5 rounded-full bg-[var(--accent)]"
+              style={{
+                height: `${b.h}%`,
+                animationDelay: b.delay,
+              }}
+            />
+          ))}
         </div>
-        <h2 className="text-3xl font-extrabold tracking-tight text-[var(--text)]">
-          Ready when you are.
+
+        <h2 className="text-4xl font-extrabold leading-tight tracking-tight text-[var(--text)] sm:text-5xl">
+          Let&apos;s find{' '}
+          <span className="text-gradient-accent">your voice</span>.
         </h2>
-        <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-[var(--text-muted)]">
-          Ten short drills — vowel warm-ups, phrases, and conversation prompts.
-          Speak when prompted; the on-device coach responds with instant
-          feedback.
+        <p className="mx-auto mt-4 max-w-md text-base leading-relaxed text-[var(--text-muted)]">
+          Ten quick drills, one private coach, zero cloud. Stretch your vocal
+          cords, warm up your speech, and have a little fun while you do it.
         </p>
-        <div className="mt-6 flex flex-wrap justify-center gap-2 text-xs">
-          <span className="rounded-full bg-[var(--accent-soft)] px-3 py-1.5 font-medium text-[var(--accent)]">
+
+        {/* Three "what's coming" tiles — gives the user a sense of the
+            arc instead of a wall of prose. */}
+        <div className="mx-auto mt-8 grid max-w-md grid-cols-3 gap-2 text-left">
+          {steps.map((s, i) => {
+            const tones: Record<typeof s.tone, string> = {
+              accent:
+                'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent-ring)]',
+              violet:
+                'bg-[var(--violet-soft)] text-[var(--violet)] border-[var(--violet-soft)]',
+              warning:
+                'bg-[var(--warning-soft)] text-[var(--warning)] border-[var(--warning-soft)]',
+            };
+            return (
+              <div
+                key={s.label}
+                className="card-soft flex flex-col items-start gap-1 p-3"
+              >
+                <span
+                  className={
+                    'inline-flex h-6 w-6 items-center justify-center rounded-full border text-[11px] font-bold ' +
+                    tones[s.tone]
+                  }
+                >
+                  {i + 1}
+                </span>
+                <span className="text-sm font-semibold text-[var(--text)]">
+                  {s.label}
+                </span>
+                <span className="text-[11px] leading-snug text-[var(--text-faint)]">
+                  {s.detail}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        <button
+          onClick={onStart}
+          className="cta-shimmer group relative mt-8 inline-flex items-center justify-center gap-2 overflow-hidden rounded-full bg-[var(--accent)] px-12 py-4 text-base font-bold tracking-wide text-[var(--accent-fg)] shadow-xl shadow-[var(--accent-soft)] transition-all duration-200 hover:scale-[1.03] hover:bg-[var(--accent-strong)] hover:shadow-2xl active:scale-[0.97]"
+        >
+          <span className="relative">Start session</span>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="relative h-4 w-4 transition-transform duration-200 group-hover:translate-x-1"
+            aria-hidden="true"
+          >
+            <path d="M5 12h14" />
+            <path d="m13 6 6 6-6 6" />
+          </svg>
+        </button>
+
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11px] text-[var(--text-faint)]">
+          <span className="inline-flex items-center gap-1">
+            <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
             100% on-device
           </span>
-          <span className="rounded-full bg-[var(--violet-soft)] px-3 py-1.5 font-medium text-[var(--violet)]">
-            Gemma 4 AI
+          <span className="inline-flex items-center gap-1">
+            <span className="h-1.5 w-1.5 rounded-full bg-[var(--violet)]" />
+            Gemma 4
           </span>
-          <span className="rounded-full bg-[var(--warning-soft)] px-3 py-1.5 font-medium text-[var(--warning)]">
+          <span className="inline-flex items-center gap-1">
+            <span className="h-1.5 w-1.5 rounded-full bg-[var(--warning)]" />
             ~10 min
           </span>
         </div>
-        <button
-          onClick={onStart}
-          className="mt-8 rounded-full bg-[var(--accent)] px-10 py-3.5 font-bold tracking-wide text-[var(--accent-fg)] shadow-lg shadow-[var(--accent-soft)] transition hover:bg-[var(--accent-strong)] active:scale-[0.97]"
-        >
-          Start session
-        </button>
       </div>
     </div>
   );
@@ -1911,40 +2064,6 @@ function ErrorCard({ message }: { message: string }) {
         Make sure the backend started cleanly. Run <code>./run-web</code> from
         the repo root.
       </div>
-    </div>
-  );
-}
-
-function TestVoiceRow() {
-  const [tested, setTested] = useState(false);
-  const [ok, setOk] = useState<boolean | null>(null);
-  const onTest = () => {
-    const fired = testSpeech();
-    setTested(true);
-    setOk(fired);
-  };
-  return (
-    <div className="card-soft flex items-center justify-between px-4 py-2 text-xs text-[var(--text-muted)]">
-      <span>
-        {!tested && 'Quick check: does your browser play voice?'}
-        {tested && ok && (
-          <>
-            ✓ Test queued. If you didn't hear "Voice test, can you hear me?",
-            check System Output volume and the page's audio permission.
-          </>
-        )}
-        {tested && ok === false && (
-          <span className="text-[var(--danger)]">
-            Could not start a TTS utterance. Try Chrome/Edge/Safari.
-          </span>
-        )}
-      </span>
-      <button
-        onClick={onTest}
-        className="ml-3 shrink-0 rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-3 py-1 text-[var(--accent)] transition hover:bg-[var(--surface)]"
-      >
-        🔊 Test voice
-      </button>
     </div>
   );
 }

@@ -1,17 +1,16 @@
-INFO:     Started server process [11991]
+INFO:     Started server process [36087]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
-07:44:19 INFO  voicecoach.server: loading intent model from /opt/homebrew/opt/cactus/libexec/weights/functiongemma-270m-it
-07:44:19 INFO  voicecoach.server: loading whisper from /opt/homebrew/opt/cactus/libexec/weights/whisper-tiny
-07:44:19 INFO  voicecoach.server: loading model from /opt/homebrew/opt/cactus/libexec/weights/gemma-4-e2b-it
-07:44:19 INFO  voicecoach.server: whisper ready (openai/whisper-tiny)
-07:44:20 INFO  voicecoach.server: intent router ready (google/functiongemma-270m-it)
-INFO:     127.0.0.1:50100 - "GET /health HTTP/1.1" 200 OK
-[WARN] [npu] [gemma4] model.mlpackage not found; using CPU prefill
-07:44:23 INFO  voicecoach.server: model ready
-INFO:     127.0.0.1:50118 - "WebSocket /ws/coach" [accepted]
-07:44:23 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=50118)
-07:44:23 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T144423Z.jsonl
+09:04:30 INFO  voicecoach.server: loading whisper from /opt/homebrew/opt/cactus/libexec/weights/whisper-tiny
+09:04:30 INFO  voicecoach.server: loading intent model from /opt/homebrew/opt/cactus/libexec/weights/functiongemma-270m-it
+09:04:30 INFO  voicecoach.server: loading model from /opt/homebrew/opt/cactus/libexec/weights/gemma-4-e2b-it
+09:04:31 INFO  voicecoach.server: intent router ready (google/functiongemma-270m-it)
+INFO:     127.0.0.1:50640 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50655 - "WebSocket /ws/coach" [accepted]
+09:04:32 INFO  voicecoach.server: client connected from Address(host='127.0.0.1', port=50655)
+09:04:32 INFO  voicecoach.server: session log: /Users/sachin/.voice-coach/sessions/session-20260419T160432Z.jsonl
 INFO:     connection open
-INFO:     connection closed
+09:04:32 INFO  voicecoach.server: whisper ready (openai/whisper-tiny)
+[WARN] [npu] [gemma4] model.mlpackage not found; using CPU prefill
+09:04:41 INFO  voicecoach.server: model ready
