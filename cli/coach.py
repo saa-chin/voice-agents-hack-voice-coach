@@ -79,8 +79,11 @@ _STAGE_LABEL = {
 }
 
 
-COACH_SYSTEM_TEMPLATE = """You are a warm, patient speech coach for adults with motor speech
-disorders (Parkinson's, post-stroke dysarthria).
+COACH_SYSTEM_TEMPLATE = """You are an HONEST, evidence-based speech coach for adults with motor
+speech disorders (Parkinson's, post-stroke dysarthria). Honesty matters
+more than warmth: false praise teaches the patient that wrong attempts
+are correct, and that sets back their therapy. Tell them what they
+actually said and whether it matched the target.
 
 The patient is doing the "{exercise_name}" exercise.
 Phase: {stage_label}.
@@ -90,39 +93,78 @@ Expected utterance: "{prompt}"
 
 You will hear their attempt as audio. Do these in order:
 
-1. Identify what they ACTUALLY said. Put a brief transcription in the
-   "heard" field (1-10 words, lowercase, no punctuation). If you hear
-   only silence or noise, write "heard": "(nothing clear)".
+1. TRANSCRIBE FAITHFULLY. Put what you actually heard into the "heard"
+   field (1-10 words, lowercase, no punctuation). Do NOT echo the
+   expected utterance back — write what they said, even if it is
+   wrong, off-topic, filler, or nothing.
+   - Silence, breathing, coughing, only background noise → write
+     "heard": "(nothing clear)".
+   - Filler ("um", "uh", "thank you", off-topic chatter) → transcribe
+     it verbatim. Do NOT map filler onto the prompt.
 
-2. Decide whether what you heard matches what was asked. Set
-   "metrics_observed.matched_prompt" accordingly.
-   - For single words and names, the target word must be recognisable
-     (minor mispronunciations are fine if intent is clear).
-   - For short sentences and questions, the key content words must be
-     present (close paraphrases are fine if intent is preserved).
-   - For a "prompt_response" style drill (the prompt is a question like
-     "What did you eat today?"), any on-topic answer counts as a match —
-     you're judging delivery, not correctness of the answer.
+2. STRICTLY judge whether what you heard matches what was asked. Set
+   "metrics_observed.matched_prompt" accordingly. The bar is HIGH —
+   when in doubt, set it to false.
+   - Single words / names: the target word must be recognisable.
+     Minor mispronunciations are fine; saying a totally different word
+     is a mismatch even if it is a real English word.
+   - Short sentences / questions: the key content words must be
+     present in the audio.
+   - "prompt_response" style drills (prompt is an open question like
+     "What did you eat today?"): any on-topic answer counts.
+   - Sustained vowels / pitch glides: a clear vowel attempt counts.
+     Off-topic words do NOT.
+   - If you heard nothing or only filler, matched_prompt MUST be false.
 
-3. If matched_prompt is FALSE: set "next_action" to "retry" and have
-   "feedback" gently say what you heard and ask them to try again.
-   Example: "I heard 'nah' — try the long vowel 'aaah' once more."
+3. PICK next_action HONESTLY based on the match.
+   - matched_prompt = false  →  next_action MUST be "retry".
+   - matched_prompt = true and the attempt was solid (loudness near
+     target, clear, full-voiced) → "advance".
+   - matched_prompt = true but a specific element needs work
+     (too soft, trailed off, monotone, rushed) → "retry".
+   - The patient sounds clearly fatigued or asks for a break → "rest".
+     Otherwise do NOT pick "rest".
 
-4. If matched_prompt is TRUE: give vocal-quality feedback grounded in
-   these measurements (relative, NOT room-calibrated SPL):
-     - average voiced loudness: {achieved_dbfs:.1f} dBFS
-     - target loudness:         {target_dbfs:.1f} dBFS
-     - utterance duration:      {duration_s:.1f} s
-   Listen for vocal effort, breath support, pitch monotony, trailing
-   off, rushed pace, slurred articulation. Be specific but never
-   discouraging. Choose "advance" if it was solid, "retry" if a
-   specific element needs another attempt, "rest" if they sound tired.
+4. WRITE ack + feedback to MATCH next_action. NEVER praise a mismatch.
+   - matched_prompt = false:
+     * "ack" must be neutral — name what you heard, do NOT congratulate.
+       Good: "I heard 'thank you'." / "I caught 'um'." / "Got silence."
+       BAD : "Nice try!" / "Good attempt!" / "Great effort!"
+     * "feedback" must restate the prompt and ask them to try IT.
+       Good: "The prompt was 'Help' — say that one word for me."
+   - matched_prompt = true and next_action = "advance": brief warm
+     acknowledgement is fine ("Strong voice." / "Clear and full.").
+   - matched_prompt = true and next_action = "retry": acknowledge the
+     right word, then name the specific element to fix.
+
+Use these measurements when grading vocal quality (relative, NOT
+room-calibrated SPL):
+  - average voiced loudness: {achieved_dbfs:.1f} dBFS
+  - target loudness:         {target_dbfs:.1f} dBFS
+  - utterance duration:      {duration_s:.1f} s
+
+Worked examples for "Expected utterance: Help":
+
+  Input: clear "Help" at target loudness
+    -> {{"heard":"help","ack":"Clear and strong.","feedback":"Same energy on the next one.",
+         "next_action":"advance","metrics_observed":{{"matched_prompt":true,"loudness_ok":true,
+         "pitch_range_ok":true,"pace_ok":true,"articulation_ok":true}}}}
+
+  Input: patient says "thank you"
+    -> {{"heard":"thank you","ack":"I heard 'thank you'.","feedback":"The prompt was 'Help' — say that one word for me.",
+         "next_action":"retry","metrics_observed":{{"matched_prompt":false,"loudness_ok":false,
+         "pitch_range_ok":false,"pace_ok":false,"articulation_ok":false}}}}
+
+  Input: patient mumbles "uhh"
+    -> {{"heard":"uhh","ack":"Got a hesitation.","feedback":"Take a breath, then say 'Help' with a strong voice.",
+         "next_action":"retry","metrics_observed":{{"matched_prompt":false,"loudness_ok":false,
+         "pitch_range_ok":false,"pace_ok":false,"articulation_ok":false}}}}
 
 Respond with JSON ONLY. No prose, no markdown fences. Schema:
 {{
-  "heard": "<short transcription, 1-10 words>",
-  "ack": "<one short warm acknowledgement, 3-6 words>",
-  "feedback": "<one specific, actionable cue, 8-18 words>",
+  "heard": "<short transcription of what they actually said, 1-10 words>",
+  "ack": "<short, honest acknowledgement, 3-7 words>",
+  "feedback": "<one specific, actionable cue, 8-22 words>",
   "next_action": "retry" | "advance" | "rest",
   "metrics_observed": {{
     "matched_prompt": true | false,
@@ -214,6 +256,83 @@ def parse_coach_json(raw: str) -> dict[str, Any] | None:
     return obj
 
 
+# Words/phrases the model uses to praise — if any of these slip into
+# `ack` while matched_prompt is false, the enforcer rewrites the line.
+# Kept short and HIGH-PRECISION on purpose: false positives here would
+# wipe out legitimate "Strong voice" / "Clear and full" feedback when
+# the prompt actually matched.
+_PRAISE_TOKENS = (
+    "nice", "great", "good job", "good attempt", "good try",
+    "excellent", "well done", "wonderful", "fantastic", "perfect",
+    "awesome", "amazing", "beautiful", "lovely", "bravo",
+    "way to go", "keep it up", "you got it", "love that",
+)
+_PRAISE_RE = None  # built lazily from _PRAISE_TOKENS
+
+
+def _looks_like_praise(text: str) -> bool:
+    """Case-insensitive substring check against the praise vocabulary."""
+    global _PRAISE_RE
+    if _PRAISE_RE is None:
+        import re
+        _PRAISE_RE = re.compile(
+            r"\b(" + "|".join(re.escape(t) for t in _PRAISE_TOKENS) + r")\b",
+            re.IGNORECASE,
+        )
+    return bool(_PRAISE_RE.search(text or ""))
+
+
+def _enforce_strict_matching(obj: dict[str, Any]) -> dict[str, Any]:
+    """Override inconsistent fields so the coach never praises a mismatch.
+
+    Even with worked examples in the system prompt, Gemma 4 sometimes
+    returns matched_prompt=false with next_action=advance and a
+    cheerful "nice try!" ack. That's the exact failure mode that makes
+    the coach untrustworthy ("the app told me 'good job' even though I
+    said something completely different"). Rather than relying on the
+    model's discipline alone, the server enforces:
+
+      matched_prompt = false  ⇒  next_action = "retry"
+      matched_prompt = false  ⇒  ack contains no praise vocabulary
+      matched_prompt = false  ⇒  feedback names the original prompt
+
+    Mutates `obj` in place and returns it. A no-op when matched_prompt
+    is true or absent — this intentionally never overrides the model's
+    positive judgments.
+    """
+    mo = obj.get("metrics_observed") or {}
+    matched = mo.get("matched_prompt", True)
+    if matched is not False:
+        return obj
+
+    original_action = obj.get("next_action")
+    if original_action != "retry":
+        log.info(
+            "strict-match: model returned next_action=%r with "
+            "matched_prompt=false — forcing retry",
+            original_action,
+        )
+        obj["next_action"] = "retry"
+
+    ack = (obj.get("ack") or "").strip()
+    heard = (obj.get("heard") or "").strip()
+    if _looks_like_praise(ack):
+        log.info(
+            "strict-match: scrubbing praise from ack=%r (matched_prompt=false)",
+            ack,
+        )
+        # Replace with a neutral, honest acknowledgement that NAMES the
+        # mismatch. Keeps the user's trust in the coach calibrated.
+        if heard and heard != "(nothing clear)":
+            obj["ack"] = f"I heard '{heard}'."
+        elif heard == "(nothing clear)":
+            obj["ack"] = "I didn't catch that."
+        else:
+            obj["ack"] = "Not quite."
+
+    return obj
+
+
 def validate_coach_json(obj: dict[str, Any] | None) -> dict[str, Any] | None:
     if not obj:
         return None
@@ -226,6 +345,9 @@ def validate_coach_json(obj: dict[str, Any] | None) -> dict[str, Any] | None:
         log.warning("coach JSON invalid next_action: %r", obj["next_action"])
         return None
     obj.setdefault("metrics_observed", {})
+    # Strict-matching enforcement. Runs AFTER schema validation so we
+    # only ever rewrite well-formed payloads.
+    obj = _enforce_strict_matching(obj)
     return obj
 
 

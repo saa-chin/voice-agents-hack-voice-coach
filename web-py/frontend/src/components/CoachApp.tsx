@@ -565,8 +565,19 @@ export default function CoachApp() {
   const liveLevel = analysis?.rms != null ? Math.min(1, analysis.rms * 4) : 0;
   const liveScore = computeLiveScore(analysis, drill?.target_dbfs ?? -25);
 
+  const inSession =
+    phase === 'drill' ||
+    phase === 'recording' ||
+    phase === 'thinking' ||
+    phase === 'feedback';
+
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col px-6 py-10">
+    <main
+      className={
+        'mx-auto flex min-h-screen w-full flex-col px-6 py-10 ' +
+        (inSession ? 'max-w-6xl' : 'max-w-2xl')
+      }
+    >
       <Header wsState={wsState} />
 
       <section className="flex flex-1 flex-col gap-4">
@@ -599,34 +610,30 @@ export default function CoachApp() {
           </>
         )}
 
-        {(phase === 'drill' ||
-          phase === 'recording' ||
-          phase === 'thinking' ||
-          phase === 'feedback') &&
-          drill && (
-            <SessionView
-              drill={drill}
-              metrics={metrics}
-              coach={coach}
-              phase={phase}
-              level={liveLevel}
-              analysis={analysis}
-              liveScore={liveScore}
-              transcript={liveTranscript}
-              autoMode={autoMode}
-              onToggleAuto={() => setAutoMode((v) => !v)}
-              transientError={transientError}
-              onStartRec={startRecording}
-              onStopRec={stopRecording}
-              onRepeat={repeatPrompt}
-              onSkip={skipDrill}
-              onRest={restSession}
-              commandPhase={commandPhase}
-              intentResult={intentResult}
-              onStartCommand={startVoiceCommand}
-              onCancelCommand={cancelVoiceCommand}
-            />
-          )}
+        {inSession && drill && (
+          <SessionView
+            drill={drill}
+            metrics={metrics}
+            coach={coach}
+            phase={phase}
+            level={liveLevel}
+            analysis={analysis}
+            liveScore={liveScore}
+            transcript={liveTranscript}
+            autoMode={autoMode}
+            onToggleAuto={() => setAutoMode((v) => !v)}
+            transientError={transientError}
+            onStartRec={startRecording}
+            onStopRec={stopRecording}
+            onRepeat={repeatPrompt}
+            onSkip={skipDrill}
+            onRest={restSession}
+            commandPhase={commandPhase}
+            intentResult={intentResult}
+            onStartCommand={startVoiceCommand}
+            onCancelCommand={cancelVoiceCommand}
+          />
+        )}
 
         {phase === 'done' && summary && (
           <SummaryCard summary={summary} onRestart={startSession} />
@@ -767,41 +774,62 @@ function SessionView({
     (transcript.final || transcript.interim || phase === 'recording');
   return (
     <div className="flex flex-col gap-4">
+      {/* Stage indicator stays full-width so progress through the
+          warmup → glide → counting → main_task pipeline reads as
+          one banner across the top of the workspace. */}
       <StageIndicator drill={drill} />
-      <PromptCard drill={drill} onRepeat={onRepeat} />
-      <MicButton
-        phase={phase}
-        level={level}
-        autoMode={autoMode}
-        speaking={analysis?.speaking ?? false}
-        onStart={onStartRec}
-        onStop={onStopRec}
-      />
-      {/* One thin action bar inline with the mic — no separate panel
-          at the bottom. Voice commands invoke the same actions as
-          the pills; chip below shows the routed verdict + latencies. */}
-      <ActionBar
-        commandPhase={commandPhase}
-        intentResult={intentResult}
-        onRepeat={onRepeat}
-        onSkip={onSkip}
-        onRest={onRest}
-        onStartCommand={onStartCommand}
-        onCancelCommand={onCancelCommand}
-        disabled={phase === 'recording' || phase === 'thinking'}
-      />
-      <LiveAnalyzer
-        analysis={analysis}
-        target_dbfs={drill.target_dbfs}
-        phase={phase}
-        liveScore={liveScore}
-      />
-      {showTranscript && (
-        <LiveTranscript transcript={transcript} phase={phase} />
-      )}
-      <AutoModeRow autoMode={autoMode} onToggle={onToggleAuto} phase={phase} />
-      {metrics && <MetricsLine metrics={metrics} target={drill.target_dbfs} />}
-      {coach && <CoachCard coach={coach} />}
+      {/* Two columns on lg+ screens: left side is the "doing"
+          workspace (prompt + mic + controls), right side is the
+          "watching" workspace (live signals, transcript, metrics,
+          coach feedback). Below lg we collapse back to a single
+          stack so phones still read top-to-bottom. */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
+        <div className="flex flex-col gap-4">
+          <PromptCard drill={drill} onRepeat={onRepeat} />
+          <MicButton
+            phase={phase}
+            level={level}
+            autoMode={autoMode}
+            speaking={analysis?.speaking ?? false}
+            onStart={onStartRec}
+            onStop={onStopRec}
+          />
+          {/* One thin action bar inline with the mic — no separate
+              panel at the bottom. Voice commands invoke the same
+              actions as the pills; chip below shows the routed
+              verdict + latencies. */}
+          <ActionBar
+            commandPhase={commandPhase}
+            intentResult={intentResult}
+            onRepeat={onRepeat}
+            onSkip={onSkip}
+            onRest={onRest}
+            onStartCommand={onStartCommand}
+            onCancelCommand={onCancelCommand}
+            disabled={phase === 'recording' || phase === 'thinking'}
+          />
+          <AutoModeRow
+            autoMode={autoMode}
+            onToggle={onToggleAuto}
+            phase={phase}
+          />
+        </div>
+        <div className="flex flex-col gap-4">
+          <LiveAnalyzer
+            analysis={analysis}
+            target_dbfs={drill.target_dbfs}
+            phase={phase}
+            liveScore={liveScore}
+          />
+          {showTranscript && (
+            <LiveTranscript transcript={transcript} phase={phase} />
+          )}
+          {metrics && (
+            <MetricsLine metrics={metrics} target={drill.target_dbfs} />
+          )}
+          {coach && <CoachCard coach={coach} />}
+        </div>
+      </div>
       {transientError && <TransientError message={transientError} />}
     </div>
   );

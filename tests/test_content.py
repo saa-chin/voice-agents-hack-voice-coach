@@ -1,4 +1,19 @@
-"""Coverage for cli/content.py — JSON-driven Parkinson's therapy program."""
+"""Coverage for cli/content.py — JSON-driven Parkinson's therapy program.
+
+The current program.json is the LSVT LOUD-aligned version (v3.0).
+Structure:
+  warmup_ah          1 exercise  (L0_ah)         1 drill   (AH)
+  pitch_glides       2 exercises (L0_high, L0_low) 2 drills (high AH, low AH)
+  counting           1 exercise  (L0_count)      1 drill   (1..10)
+  functional_phrases 2 exercises (L_func_basics, L_func_action) 10 drills
+  sentences          2 exercises (L_sent_breath, L_sent_question) 7 drills
+                                                  ---
+                                                  21 drills total
+
+If the program JSON is regenerated (different LSVT phrase set, custom
+clinic content, etc.) update the constants at the top of this file —
+not the assertion sites scattered through it.
+"""
 from __future__ import annotations
 
 import dataclasses
@@ -9,38 +24,64 @@ import content
 import pytest
 
 
+# ---- Snapshot of the canonical program shape ----------------------------
+# Update these alongside cli/program.json so the schema/structure tests
+# continue to enforce the LSVT-aligned layout end-to-end.
+
+CATEGORY_IDS = ["warmup_ah", "pitch_glides", "counting", "functional_phrases", "sentences"]
+EXERCISES_BY_CATEGORY = {
+    "warmup_ah":          ["L0_ah"],
+    "pitch_glides":       ["L0_high", "L0_low"],
+    "counting":           ["L0_count"],
+    "functional_phrases": ["L_func_basics", "L_func_action"],
+    "sentences":          ["L_sent_breath", "L_sent_question"],
+}
+DRILLS_PER_EXERCISE = {
+    "L0_ah":          1,
+    "L0_high":        1,
+    "L0_low":         1,
+    "L0_count":       1,
+    "L_func_basics":  5,
+    "L_func_action":  5,
+    "L_sent_breath":  4,
+    "L_sent_question": 3,
+}
+DRILLS_PER_CATEGORY = {
+    "warmup_ah":          1,
+    "pitch_glides":       2,
+    "counting":           1,
+    "functional_phrases": 10,
+    "sentences":          7,
+}
+TOTAL_DRILLS = sum(DRILLS_PER_CATEGORY.values())  # 21
+TOTAL_EXERCISES = sum(len(v) for v in EXERCISES_BY_CATEGORY.values())  # 8
+
+
 # ---- Program loading -----------------------------------------------------
 
 class TestProgramLoading:
     def test_loads_program_from_json(self):
         prog = content.load_program()
         assert prog.program_name.startswith("Parkinsons")
-        assert prog.version == "2.0"
+        # LSVT-aligned program is v3.x. Major version bumps signal a
+        # content change worth re-reviewing the test snapshot above.
+        assert prog.version.startswith("3.")
         assert prog.default_flow == ("main_task",)
 
-    def test_program_has_all_three_categories(self):
+    def test_program_has_all_canonical_categories(self):
         prog = content.load_program()
         ids = [c.id for c in prog.categories]
-        assert ids == ["words", "names", "sentences"]
+        assert ids == CATEGORY_IDS
 
-    def test_words_has_three_lessons(self):
-        cat = content.find_category("words")
-        assert len(cat.exercises) == 3
-        assert [e.id for e in cat.exercises] == ["L1", "L3", "L7"]
+    @pytest.mark.parametrize("category_id,expected_exercises", list(EXERCISES_BY_CATEGORY.items()))
+    def test_category_has_expected_exercises(self, category_id, expected_exercises):
+        cat = content.find_category(category_id)
+        assert [e.id for e in cat.exercises] == expected_exercises
 
-    def test_names_has_two_lessons(self):
-        cat = content.find_category("names")
-        assert [e.id for e in cat.exercises] == ["L2", "L6"]
-
-    def test_sentences_has_five_lessons(self):
-        cat = content.find_category("sentences")
-        assert [e.id for e in cat.exercises] == ["L4", "L5", "L8", "L9", "L10"]
-
-    def test_total_lesson_count(self):
+    def test_total_exercise_count(self):
         prog = content.load_program()
         total = sum(len(c.exercises) for c in prog.categories)
-        # 3 + 2 + 5 = 10
-        assert total == 10
+        assert total == TOTAL_EXERCISES
 
     def test_each_lesson_has_main_task_phase(self):
         prog = content.load_program()
@@ -127,52 +168,81 @@ class TestDrillDataclass:
 # ---- Flattening: exercise → drills --------------------------------------
 
 class TestDrillsForExercise:
-    def test_L1_unrolls_to_five_drills(self):
-        drills = content.drills_for_exercise("L1")
-        # main_task with 5 content items (prompt + 4 variations) = 5
-        assert len(drills) == 5
+    def test_func_basics_unrolls_to_canonical_lsvt_phrases(self):
+        """LSVT LOUD daily greetings: real-world phrases the patient
+        actually says every day — NOT vowel sounds or fragments."""
+        drills = content.drills_for_exercise("L_func_basics")
+        assert [d.prompt for d in drills] == [
+            "Good morning.",
+            "How are you?",
+            "I'm fine, thanks.",
+            "Thank you.",
+            "I love you.",
+        ]
         assert all(d.stage == "main_task" for d in drills)
+
+    def test_func_action_unrolls_to_canonical_lsvt_phrases(self):
+        drills = content.drills_for_exercise("L_func_action")
         assert [d.prompt for d in drills] == [
-            "New York", "London", "Paris", "Tokyo", "Sydney",
+            "I need help.",
+            "Please sit down.",
+            "Pass the food, please.",
+            "Answer the phone.",
+            "Shut the door.",
         ]
 
-    def test_L3_unrolls_everyday_action_words(self):
-        drills = content.drills_for_exercise("L3")
-        assert [d.prompt for d in drills] == [
-            "Help", "Stop", "Go", "Wait", "Come",
-        ]
-
-    def test_L7_has_three_drills(self):
-        drills = content.drills_for_exercise("L7")
-        assert [d.prompt for d in drills] == [
-            "California", "Mississippi", "Philadelphia",
-        ]
-
-    def test_L10_prompt_response_has_single_drill(self):
-        drills = content.drills_for_exercise("L10")
+    def test_sustained_ah_is_one_drill(self):
+        drills = content.drills_for_exercise("L0_ah")
         assert len(drills) == 1
-        assert drills[0].prompt == "What did you eat today?"
+        assert drills[0].prompt == "AH"
+        # Foundational LSVT exercise — 6 reps, 6 seconds each.
+        assert drills[0].target_repetitions == 6
+        assert drills[0].target_duration_sec == 6
+
+    def test_pitch_glide_high_drill_carries_repetitions(self):
+        drills = content.drills_for_exercise("L0_high")
+        assert len(drills) == 1
+        assert drills[0].target_repetitions == 6
+        assert drills[0].target_duration_sec == 5
+
+    def test_count_one_to_ten_drill_present(self):
+        drills = content.drills_for_exercise("L0_count")
+        assert len(drills) == 1
+        assert drills[0].prompt == "1 2 3 4 5 6 7 8 9 10"
+
+    def test_question_sentences_drill(self):
+        drills = content.drills_for_exercise("L_sent_question")
+        assert [d.prompt for d in drills] == [
+            "How are you today?",
+            "Where are you going?",
+            "Would you like to go out to eat?",
+        ]
+        # Each prompt is a real question — none of them are single
+        # letters or vowel fragments.
+        for d in drills:
+            assert d.prompt.endswith("?")
+            assert len(d.prompt.split()) >= 3, f"too short: {d.prompt!r}"
 
     def test_main_task_drill_carries_focus(self):
-        drills = content.drills_for_exercise("L1")
-        main = drills[0]
-        assert "clear consonants" in main.focus.lower()
-        assert main.target_repetitions == 1
+        drills = content.drills_for_exercise("L_func_basics")
+        first = drills[0]
+        assert "loud" in first.focus.lower() or "project" in first.focus.lower()
+        assert first.target_repetitions == 1
 
     def test_instructions_become_note(self):
-        drills = content.drills_for_exercise("L1")
+        drills = content.drills_for_exercise("L_func_basics")
         # When a phase has explicit content, instructions become the note.
-        assert drills[0].note.startswith("Say each city name clearly")
+        assert "loud" in drills[0].note.lower()
 
     def test_each_drill_has_category_and_exercise_metadata(self):
-        for d in content.drills_for_exercise("L1"):
-            assert d.category_id == "words"
-            assert d.category_name == "Words"
-            assert d.exercise_id == "L1"
-            assert d.exercise_name == "Speak Strong City Names"
+        for d in content.drills_for_exercise("L_func_basics"):
+            assert d.category_id == "functional_phrases"
+            assert d.category_name.startswith("Functional Phrases")
+            assert d.exercise_id == "L_func_basics"
+            assert d.exercise_name == "Daily Greetings & Replies"
 
     def test_target_dbfs_uses_main_task_level(self):
-        drills = content.drills_for_exercise("L1")
+        drills = content.drills_for_exercise("L_func_basics")
         for d in drills:
             assert d.target_dbfs == content.DEFAULT_TARGET_DBFS_BY_STAGE["main_task"]
 
@@ -184,25 +254,10 @@ class TestDrillsForExercise:
 # ---- drills_for_category ------------------------------------------------
 
 class TestDrillsForCategory:
-    def test_words_total_drills(self):
-        drills = content.drills_for_category("words")
-        # L1: 5, L3: 5, L7: 3 → 13
-        assert len(drills) == 13
-
-    def test_names_total_drills(self):
-        drills = content.drills_for_category("names")
-        # L2: 5, L6: 4 → 9
-        assert len(drills) == 9
-
-    def test_sentences_total_drills(self):
-        drills = content.drills_for_category("sentences")
-        # L4: 4, L5: 3, L8: 3, L9: 3, L10: 1 → 14
-        assert len(drills) == 14
-
-    def test_names_L6_prompts_include_exclamation(self):
-        drills = content.drills_for_category("names")
-        l6_prompts = [d.prompt for d in drills if d.exercise_id == "L6"]
-        assert l6_prompts == ["Anna!", "Tom!", "Lisa!", "Mark!"]
+    @pytest.mark.parametrize("category_id,expected_count", list(DRILLS_PER_CATEGORY.items()))
+    def test_category_drill_count(self, category_id, expected_count):
+        drills = content.drills_for_category(category_id)
+        assert len(drills) == expected_count
 
     def test_unknown_category_raises_keyerror(self):
         with pytest.raises(KeyError):
@@ -216,13 +271,11 @@ class TestDefaultDrillSet:
         monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
         monkeypatch.delenv("VOICE_COACH_CATEGORY", raising=False)
         drills = content.default_drill_set()
-        # Full program: 13 + 9 + 14 = 36
-        assert len(drills) == 36
-        # All three categories appear.
-        cats = {d.category_id for d in drills}
-        assert cats == {"words", "names", "sentences"}
-        # All 10 lessons appear.
-        assert len({d.exercise_id for d in drills}) == 10
+        assert len(drills) == TOTAL_DRILLS
+        # All canonical categories appear.
+        assert {d.category_id for d in drills} == set(CATEGORY_IDS)
+        # All exercises appear.
+        assert len({d.exercise_id for d in drills}) == TOTAL_EXERCISES
 
     def test_default_drills_are_in_program_order(self, monkeypatch):
         monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
@@ -233,23 +286,21 @@ class TestDefaultDrillSet:
         for d in drills:
             if not seen or seen[-1] != d.category_id:
                 seen.append(d.category_id)
-        assert seen == ["words", "names", "sentences"]
+        assert seen == CATEGORY_IDS
 
     def test_exercise_override_beats_category_and_default(self, monkeypatch):
-        monkeypatch.setenv("VOICE_COACH_CATEGORY", "words")
-        monkeypatch.setenv("VOICE_COACH_EXERCISE", "L6")
+        monkeypatch.setenv("VOICE_COACH_CATEGORY", "functional_phrases")
+        monkeypatch.setenv("VOICE_COACH_EXERCISE", "L_func_action")
         drills = content.default_drill_set()
-        # Lesson override wins.
-        assert all(d.exercise_id == "L6" for d in drills)
-        assert len(drills) == 4
+        assert all(d.exercise_id == "L_func_action" for d in drills)
+        assert len(drills) == DRILLS_PER_EXERCISE["L_func_action"]
 
     def test_category_override_returns_only_that_category(self, monkeypatch):
         monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
-        monkeypatch.setenv("VOICE_COACH_CATEGORY", "names")
+        monkeypatch.setenv("VOICE_COACH_CATEGORY", "functional_phrases")
         drills = content.default_drill_set()
-        assert all(d.category_id == "names" for d in drills)
-        # L2: 5, L6: 4 → 9
-        assert len(drills) == 9
+        assert all(d.category_id == "functional_phrases" for d in drills)
+        assert len(drills) == DRILLS_PER_CATEGORY["functional_phrases"]
 
     def test_unknown_exercise_override_raises(self, monkeypatch):
         monkeypatch.setenv("VOICE_COACH_EXERCISE", "nonexistent")
@@ -266,44 +317,38 @@ class TestDefaultDrillSet:
 class TestAllDrills:
     def test_all_drills_returns_full_program(self):
         drills = content.all_drills()
-        assert len(drills) == 36
+        assert len(drills) == TOTAL_DRILLS
 
     def test_all_drills_per_category_count(self):
         drills = content.all_drills()
         per_cat: dict[str, int] = {}
         for d in drills:
             per_cat[d.category_id] = per_cat.get(d.category_id, 0) + 1
-        assert per_cat == {
-            "words": 13,
-            "names": 9,
-            "sentences": 14,
-        }
+        assert per_cat == DRILLS_PER_CATEGORY
 
     def test_all_drills_per_exercise_count(self):
         drills = content.all_drills()
         per_ex: dict[str, int] = {}
         for d in drills:
             per_ex[d.exercise_id] = per_ex.get(d.exercise_id, 0) + 1
-        assert per_ex == {
-            "L1": 5, "L3": 5, "L7": 3,
-            "L2": 5, "L6": 4,
-            "L4": 4, "L5": 3, "L8": 3, "L9": 3, "L10": 1,
-        }
+        assert per_ex == DRILLS_PER_EXERCISE
 
-    def test_all_drills_first_is_L1_new_york(self):
+    def test_all_drills_first_is_warmup_ah(self):
+        """Program order starts with the LSVT foundation: sustained AH."""
         drills = content.all_drills()
         first = drills[0]
         assert first.stage == "main_task"
-        assert first.exercise_id == "L1"
-        assert first.category_id == "words"
-        assert first.prompt == "New York"
+        assert first.exercise_id == "L0_ah"
+        assert first.category_id == "warmup_ah"
+        assert first.prompt == "AH"
 
-    def test_all_drills_last_is_L10_prompt(self):
+    def test_all_drills_last_is_a_sentence_question(self):
         drills = content.all_drills()
         last = drills[-1]
         assert last.stage == "main_task"
-        assert last.exercise_id == "L10"
-        assert last.prompt == "What did you eat today?"
+        assert last.category_id == "sentences"
+        # The final question in the last sentences exercise.
+        assert last.prompt.endswith("?")
 
     def test_every_drill_has_exercise_metadata(self):
         for d in content.all_drills():
@@ -341,13 +386,13 @@ class TestEmptyProgram:
 class TestQueryHelpers:
     def test_all_exercises_returns_all_pairs(self):
         pairs = content.all_exercises()
-        assert len(pairs) == 10
+        assert len(pairs) == TOTAL_EXERCISES
         for cat, ex in pairs:
             assert isinstance(cat, content.Category)
             assert isinstance(ex, content.Exercise)
 
     def test_find_exercise_returns_correct_pair(self):
-        cat, ex = content.find_exercise("L8")
+        cat, ex = content.find_exercise("L_sent_question")
         assert cat.id == "sentences"
         assert ex.name == "Ask Questions Clearly"
 

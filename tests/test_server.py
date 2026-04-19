@@ -82,13 +82,17 @@ def server(monkeypatch, tmp_path):
     # exercise the real implementation by setting HAS_SAY back to True.
     monkeypatch.setattr(srv, "HAS_SAY", False)
 
-    # Default canned reply — overridable per-test.
+    # Default canned reply uses a realistic transcript that mirrors
+    # what the canonical drill prompt ("AH") would actually be heard
+    # as. Avoid placeholders like "test" / "x" / "y" — they don't
+    # exercise the strict-matching enforcer because they're not on
+    # the praise vocabulary.
     state = {
         "responses": [
             json.dumps({
-                "heard": "test",
-                "ack": "Nice",
-                "feedback": "Good first try.",
+                "heard": "ah",
+                "ack": "Strong voice.",
+                "feedback": "Same energy on the next one.",
                 "next_action": "advance",
                 "metrics_observed": {"matched_prompt": True, "loudness_ok": True},
             })
@@ -259,14 +263,13 @@ def test_ws_happy_path_first_turn_advance(server):
             drill0 = ws.receive_json()
             assert drill0["type"] == "drill"
             assert drill0["position"] == 0
-            # First drill of the default program is L1 (Speak Strong City Names),
-            # a main-task-only lesson with 5 city-name prompts.
-            assert drill0["total"] >= 5
+            # First drill of the LSVT-aligned default program is the
+            # foundational sustained AH from the warmup_ah category.
+            assert drill0["total"] >= 1
             assert drill0["stage"] == "main_task"
-            # Richer context fields are now sent on every drill message.
-            assert drill0["exercise_id"] == "L1"
-            assert drill0["exercise_name"] == "Speak Strong City Names"
-            assert drill0["category_id"] == "words"
+            assert drill0["exercise_id"] == "L0_ah"
+            assert drill0["exercise_name"] == "Long AH"
+            assert drill0["category_id"] == "warmup_ah"
 
             ws.send_json({"type": "audio", "pcm_b64": _b64_pcm(1.0), "sample_rate": 16000})
 
@@ -279,10 +282,10 @@ def test_ws_happy_path_first_turn_advance(server):
 
             coach_msg = ws.receive_json()
             assert coach_msg["type"] == "coach"
-            assert coach_msg["ack"] == "Nice"
+            assert coach_msg["ack"] == "Strong voice."
             assert coach_msg["next_action"] == "advance"
             assert coach_msg["matched_prompt"] is True
-            assert coach_msg["heard"] == "test"
+            assert coach_msg["heard"] == "ah"
 
             assert ws.receive_json()["type"] == "advance"
             drill1 = ws.receive_json()
@@ -301,10 +304,15 @@ def test_ws_happy_path_first_turn_advance(server):
 
 def test_ws_retry_action_resends_same_drill(server):
     server["state"]["responses"] = [
-        json.dumps({"heard": "x", "ack": "ok", "feedback": "again",
+        # First attempt: patient mumbled — model honestly reports it
+        # and asks for a retry.
+        json.dumps({"heard": "uhh", "ack": "I caught a hesitation.",
+                    "feedback": "Take a breath, then try again with a strong voice.",
                     "next_action": "retry",
                     "metrics_observed": {"matched_prompt": False}}),
-        json.dumps({"heard": "y", "ack": "good", "feedback": "moving on",
+        # Second attempt: clean.
+        json.dumps({"heard": "ah", "ack": "Clear and full.",
+                    "feedback": "Same energy on the next one.",
                     "next_action": "advance",
                     "metrics_observed": {"matched_prompt": True}}),
     ]
@@ -469,11 +477,12 @@ def test_ws_model_inference_error_continues_session(server):
 def test_ws_completes_session_after_last_drill(server, monkeypatch):
     """Walking through all drills should end with session_done containing summary.
 
-    Scoped to a single lesson (L7, 3 drills) via env var so the test stays
-    fast and focused on the protocol — the full 36-drill walk is already
-    covered structurally by test_content.TestAllDrills.
+    Scoped to a single LSVT exercise (L_sent_question, 3 drills) via env
+    var so the test stays fast and focused on the protocol — the full
+    21-drill walk is already covered structurally by
+    test_content.TestAllDrills.
     """
-    monkeypatch.setenv("VOICE_COACH_EXERCISE", "L7")
+    monkeypatch.setenv("VOICE_COACH_EXERCISE", "L_sent_question")
     import content
     total = len(content.default_drill_set())
     assert total == 3
@@ -895,8 +904,10 @@ def test_ws_audio_reply_emitted_when_tts_available(server, monkeypatch):
             decoded = base64.b64decode(audio["wav_b64"])
             assert decoded == rendered_wav
             # `say` was handed the joined ack + feedback line at some
-            # point — alongside the drill prompts.
-            assert any("Nice" in c for c in say_calls), say_calls
+            # point — alongside the drill prompts. The fixture's canned
+            # reply is "Strong voice. Same energy on the next one." so
+            # we look for that exact text rather than a brittle keyword.
+            assert any("Strong voice" in c for c in say_calls), say_calls
 
 
 def test_ws_drill_prompt_wav_attached_when_tts_available(server, monkeypatch):

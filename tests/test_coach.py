@@ -160,6 +160,127 @@ class TestValidateCoachJson:
         assert coach.validate_coach_json({}) is None
 
 
+# ---- _enforce_strict_matching --------------------------------------------
+#
+# The enforcer is the server-side guard that catches the demo bug the
+# whole rewrite was triggered by: "I said something completely different
+# and the coach still said 'good job'." Even when the model returns
+# matched_prompt=false, it sometimes pairs that with next_action=advance
+# and a praise-y ack. The enforcer overrides those inconsistencies so
+# the patient is never told they were correct when they weren't.
+
+class TestStrictMatchingEnforcer:
+    def _base(self, **overrides):
+        obj = {
+            "heard": "thank you",
+            "ack": "Nice try!",
+            "feedback": "Good attempt — keep going.",
+            "next_action": "advance",
+            "metrics_observed": {"matched_prompt": False, "loudness_ok": True},
+        }
+        obj.update(overrides)
+        return obj
+
+    def test_forces_retry_when_matched_prompt_false(self):
+        obj = self._base(next_action="advance")
+        out = coach._enforce_strict_matching(obj)
+        assert out["next_action"] == "retry"
+
+    def test_does_not_touch_action_when_matched_prompt_true(self):
+        obj = self._base(
+            metrics_observed={"matched_prompt": True, "loudness_ok": True},
+            next_action="advance",
+        )
+        out = coach._enforce_strict_matching(obj)
+        assert out["next_action"] == "advance"
+
+    def test_scrubs_praise_from_ack_on_mismatch(self):
+        obj = self._base(ack="Nice try!", heard="thank you")
+        out = coach._enforce_strict_matching(obj)
+        assert "nice" not in out["ack"].lower()
+        # Honest replacement names what was actually heard.
+        assert "thank you" in out["ack"].lower()
+
+    @pytest.mark.parametrize("praise", [
+        "Nice try!", "Great attempt!", "Good job!", "Wonderful!",
+        "Excellent!", "Well done!", "Fantastic!", "Perfect!", "Awesome!",
+        "Beautiful!", "Lovely!", "Bravo!", "Way to go!",
+        "You got it!", "Keep it up!",
+    ])
+    def test_strips_known_praise_vocab_on_mismatch(self, praise):
+        obj = self._base(ack=praise, heard="thank you")
+        out = coach._enforce_strict_matching(obj)
+        assert not coach._looks_like_praise(out["ack"]), (
+            f"praise leaked through: {out['ack']!r}"
+        )
+
+    def test_uses_neutral_ack_when_nothing_was_heard(self):
+        obj = self._base(ack="Great effort!", heard="(nothing clear)")
+        out = coach._enforce_strict_matching(obj)
+        assert "didn't catch" in out["ack"].lower()
+
+    def test_uses_fallback_ack_when_heard_is_blank(self):
+        obj = self._base(ack="Wonderful!", heard="")
+        out = coach._enforce_strict_matching(obj)
+        # No transcript to quote — falls back to a generic neutral line.
+        assert "not quite" in out["ack"].lower()
+
+    def test_does_not_scrub_legitimate_positive_ack_on_match(self):
+        """When matched_prompt=true, 'Strong voice' / 'Clear and full'
+        type acks are LEGITIMATE — the enforcer must leave them alone."""
+        obj = self._base(
+            metrics_observed={"matched_prompt": True, "loudness_ok": True},
+            ack="Nice and full.",  # contains 'nice' but is correct praise
+            next_action="advance",
+        )
+        out = coach._enforce_strict_matching(obj)
+        assert out["ack"] == "Nice and full."
+        assert out["next_action"] == "advance"
+
+    def test_validate_coach_json_runs_enforcer(self):
+        """End-to-end: a praise+advance reply with matched_prompt=false
+        comes out the other side as retry + neutral ack."""
+        raw = {
+            "heard": "thank you",
+            "ack": "Great job!",
+            "feedback": "moving on",
+            "next_action": "advance",
+            "metrics_observed": {"matched_prompt": False},
+        }
+        out = coach.validate_coach_json(raw)
+        assert out is not None
+        assert out["next_action"] == "retry"
+        assert "great job" not in out["ack"].lower()
+
+
+class TestPraiseVocabulary:
+    """Direct probe of _looks_like_praise — the predicate that drives
+    whether the enforcer rewrites an ack. False positives here would
+    nuke legitimate feedback, so the bar for matching is intentionally
+    word-bounded."""
+
+    @pytest.mark.parametrize("text", [
+        "Nice try", "great", "Good job", "wonderful effort",
+        "you got it", "Way to go", "excellent",
+        "Perfect.", "amazing!", "Lovely.",
+    ])
+    def test_detects_known_praise_words(self, text):
+        assert coach._looks_like_praise(text)
+
+    @pytest.mark.parametrize("text", [
+        "I heard 'thank you'.",
+        "The prompt was 'Help'.",
+        "Take a breath, then say it again.",
+        "Strong voice.",            # legitimate match feedback
+        "Clear and full.",          # legitimate match feedback
+        "I caught a hesitation.",
+        "Got silence.",
+        "",
+    ])
+    def test_does_not_flag_neutral_or_legitimate_text(self, text):
+        assert not coach._looks_like_praise(text)
+
+
 # ---- rms_to_dbfs ---------------------------------------------------------
 
 class TestRmsToDbfs:
@@ -196,13 +317,15 @@ class TestBuildPrompt:
             prompt="Take a deep breath and sustain 'Ahhh'.",
             note="",
             target_dbfs=content.DEFAULT_TARGET_DBFS_BY_STAGE["warmup"],
-            exercise_name="Speak Strong City Names",
+            exercise_name="Long AH",
             focus="",
         )
 
     @pytest.fixture
     def main_task_drill(self):
-        drills = content.drills_for_exercise("L1")
+        # Use a real LSVT functional-phrase drill so the prompt builder
+        # is exercised against a realistic main-task line.
+        drills = content.drills_for_exercise("L_func_basics")
         return next(d for d in drills if d.stage == "main_task")
 
     def test_includes_drill_prompt_text(self, warmup_drill):
@@ -236,7 +359,8 @@ class TestBuildPrompt:
 
     def test_includes_exercise_name(self, warmup_drill):
         out = coach.build_prompt(warmup_drill, -20.0, 1.0)
-        assert "Speak Strong City Names" in out
+        # `warmup_drill` is the LSVT canonical sustained-AH exercise.
+        assert "Long AH" in out
 
     def test_includes_focus_when_present(self, main_task_drill):
         out = coach.build_prompt(main_task_drill, -15.0, 5.0)
