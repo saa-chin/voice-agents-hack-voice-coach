@@ -200,27 +200,111 @@ class TestDrillsForCategory:
 # ---- default_drill_set --------------------------------------------------
 
 class TestDefaultDrillSet:
-    def test_default_is_first_exercise_of_first_category(self, monkeypatch):
+    def test_default_walks_entire_program(self, monkeypatch):
         monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
+        monkeypatch.delenv("VOICE_COACH_CATEGORY", raising=False)
         drills = content.default_drill_set()
-        assert all(d.exercise_id == "vl_1" for d in drills)
-        assert len(drills) == 4
-        assert [d.stage for d in drills] == [
-            "warmup", "glide", "counting", "main_task"
-        ]
+        # Full clinical program: 28 + 11 + 9 + 21 = 69
+        assert len(drills) == 69
+        # All four categories appear.
+        cats = {d.category_id for d in drills}
+        assert cats == {"voice_loudness", "prosody", "articulation", "functional"}
+        # All 12 exercises appear.
+        assert len({d.exercise_id for d in drills}) == 12
 
-    def test_env_override_picks_named_exercise(self, monkeypatch):
+    def test_default_drills_are_in_program_order(self, monkeypatch):
+        monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
+        monkeypatch.delenv("VOICE_COACH_CATEGORY", raising=False)
+        drills = content.default_drill_set()
+        # Categories appear in JSON-declared order, no interleaving.
+        seen: list[str] = []
+        for d in drills:
+            if not seen or seen[-1] != d.category_id:
+                seen.append(d.category_id)
+        assert seen == ["voice_loudness", "prosody", "articulation", "functional"]
+
+    def test_exercise_override_beats_category_and_default(self, monkeypatch):
+        monkeypatch.setenv("VOICE_COACH_CATEGORY", "voice_loudness")
         monkeypatch.setenv("VOICE_COACH_EXERCISE", "ar_1")
         drills = content.default_drill_set()
+        # Exercise override wins.
         assert all(d.exercise_id == "ar_1" for d in drills)
+        assert len(drills) == 4
 
-    def test_env_override_unknown_raises(self, monkeypatch):
+    def test_category_override_returns_only_that_category(self, monkeypatch):
+        monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
+        monkeypatch.setenv("VOICE_COACH_CATEGORY", "articulation")
+        drills = content.default_drill_set()
+        assert all(d.category_id == "articulation" for d in drills)
+        # ar_1: 4, ar_2: 5 → 9
+        assert len(drills) == 9
+
+    def test_unknown_exercise_override_raises(self, monkeypatch):
         monkeypatch.setenv("VOICE_COACH_EXERCISE", "nonexistent")
         with pytest.raises(KeyError):
             content.default_drill_set()
 
+    def test_unknown_category_override_raises(self, monkeypatch):
+        monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
+        monkeypatch.setenv("VOICE_COACH_CATEGORY", "nope")
+        with pytest.raises(KeyError):
+            content.default_drill_set()
+
+
+class TestAllDrills:
+    def test_all_drills_returns_full_program(self):
+        drills = content.all_drills()
+        assert len(drills) == 69
+
+    def test_all_drills_per_category_count(self):
+        drills = content.all_drills()
+        per_cat: dict[str, int] = {}
+        for d in drills:
+            per_cat[d.category_id] = per_cat.get(d.category_id, 0) + 1
+        assert per_cat == {
+            "voice_loudness": 28,
+            "prosody": 11,
+            "articulation": 9,
+            "functional": 21,
+        }
+
+    def test_all_drills_per_exercise_count(self):
+        drills = content.all_drills()
+        per_ex: dict[str, int] = {}
+        for d in drills:
+            per_ex[d.exercise_id] = per_ex.get(d.exercise_id, 0) + 1
+        assert per_ex == {
+            "vl_1": 4, "vl_2": 8, "vl_3": 6, "vl_4": 6, "vl_5": 4,
+            "pr_1": 5, "pr_2": 6,
+            "ar_1": 4, "ar_2": 5,
+            "fn_1": 8, "fn_2": 6, "fn_3": 7,
+        }
+
+    def test_all_drills_first_is_warmup_of_vl_1(self):
+        drills = content.all_drills()
+        first = drills[0]
+        assert first.stage == "warmup"
+        assert first.exercise_id == "vl_1"
+        assert first.category_id == "voice_loudness"
+
+    def test_all_drills_last_is_main_task_of_fn_3(self):
+        drills = content.all_drills()
+        last = drills[-1]
+        assert last.stage == "main_task"
+        assert last.exercise_id == "fn_3"
+        assert last.prompt == "PHONE"
+
+    def test_every_drill_has_exercise_metadata(self):
+        for d in content.all_drills():
+            assert d.exercise_id, f"drill missing exercise_id: {d}"
+            assert d.exercise_name, f"drill missing exercise_name: {d}"
+            assert d.category_id, f"drill missing category_id: {d}"
+            assert d.category_name, f"drill missing category_name: {d}"
+
+
+class TestEmptyProgram:
     def test_empty_program_resolves_to_empty_drill_set(self, tmp_path, monkeypatch):
-        """Defensive: a program with no categories returns []."""
+        """Defensive: a program with no categories yields []."""
         empty = tmp_path / "empty.json"
         empty.write_text(json.dumps({
             "program_name": "empty",
@@ -229,12 +313,12 @@ class TestDefaultDrillSet:
             "categories": [],
         }))
         monkeypatch.delenv("VOICE_COACH_EXERCISE", raising=False)
-        # Force the lru_cache to re-load with the empty program.
+        monkeypatch.delenv("VOICE_COACH_CATEGORY", raising=False)
         content.load_program.cache_clear()
         original_path = content.PROGRAM_JSON_PATH
         try:
             monkeypatch.setattr(content, "PROGRAM_JSON_PATH", empty)
-            assert content._resolve_default_exercise_id() == ""
+            assert content.all_drills() == []
             assert content.default_drill_set() == []
         finally:
             monkeypatch.setattr(content, "PROGRAM_JSON_PATH", original_path)

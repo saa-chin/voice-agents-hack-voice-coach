@@ -6,17 +6,24 @@ CLI, the FastAPI server, and (manually mirrored) the mobile app.
 
 Public API (kept stable for downstream callers):
   - Drill                  dataclass — one step in the coach loop
-  - default_drill_set()    -> list[Drill]    flattened drills for the
-                                              default exercise (the first
-                                              exercise of the first category,
-                                              i.e. vl_1 "Sustained Vowel Power")
+  - default_drill_set()    -> list[Drill]    every drill in the program,
+                                              flattened in
+                                              category → exercise → phase order
+                                              (currently 69 steps).
+                                              Override scope with env vars
+                                              for shorter targeted sessions.
+  - all_drills()           -> list[Drill]    same as default with no env
+                                              overrides (the full program).
   - drills_for_exercise(exercise_id)
   - drills_for_category(category_id)
   - load_program()         -> Program        full structured program
-  - default_exercise_id    str               configurable via env
 
-Environment overrides:
-  - VOICE_COACH_EXERCISE   pick a specific exercise id (e.g. "ar_1")
+Environment overrides (highest priority first):
+  - VOICE_COACH_EXERCISE   pick a single exercise id (e.g. "ar_1")
+                           → 4-8 drills, ~1-2 min
+  - VOICE_COACH_CATEGORY   pick a single category id (e.g. "voice_loudness")
+                           → 9-28 drills depending on category
+  - (neither set)          full program → 69 drills, ~15-20 min
   - VOICE_COACH_PROGRAM    path to a custom program JSON file
 
 `target_dbfs` is a relative loudness target (dBFS), NOT a calibrated
@@ -191,16 +198,9 @@ def load_program(path: Path | None = None) -> Program:
     return _build_program(raw)
 
 
-# --- Default-exercise selection -----------------------------------------
-
-def _resolve_default_exercise_id() -> str:
-    explicit = os.environ.get("VOICE_COACH_EXERCISE", "").strip()
-    if explicit:
-        return explicit
-    prog = load_program()
-    if prog.categories and prog.categories[0].exercises:
-        return prog.categories[0].exercises[0].id
-    return ""
+# (Default-exercise selection no longer needed — default_drill_set() now
+# walks the full program. See VOICE_COACH_EXERCISE / VOICE_COACH_CATEGORY
+# env vars below for scoping down.)
 
 
 # --- Flattening: Exercise → list[Drill] ---------------------------------
@@ -282,14 +282,35 @@ def drills_for_category(category_id: str) -> list[Drill]:
     return out
 
 
-def default_drill_set() -> list[Drill]:
-    """Default sequence: one exercise (configurable via VOICE_COACH_EXERCISE).
+def all_drills() -> list[Drill]:
+    """Every drill in the program, in category → exercise → phase order.
 
-    Defaults to the first exercise of the first category in the program
-    (vl_1 "Sustained Vowel Power" — 4 drill steps walking the full
-    warmup → glide → counting → main_task flow).
+    Currently 69 steps:
+      voice_loudness  28  (vl_1=4, vl_2=8, vl_3=6, vl_4=6, vl_5=4)
+      prosody         11  (pr_1=5, pr_2=6)
+      articulation     9  (ar_1=4, ar_2=5)
+      functional      21  (fn_1=8, fn_2=6, fn_3=7)
     """
-    eid = _resolve_default_exercise_id()
-    if not eid:
-        return []
-    return drills_for_exercise(eid)
+    out: list[Drill] = []
+    for cat, ex in all_exercises():
+        out.extend(_drills_from_exercise(ex, cat))
+    return out
+
+
+def default_drill_set() -> list[Drill]:
+    """Default sequence: the entire clinical program.
+
+    Override with one of these env vars (highest priority first):
+      VOICE_COACH_EXERCISE  →  one exercise (e.g. "ar_1")
+      VOICE_COACH_CATEGORY  →  one category (e.g. "voice_loudness")
+
+    With nothing set, returns every drill from every category — about
+    69 steps, a full 15-20 min therapy session.
+    """
+    eid = os.environ.get("VOICE_COACH_EXERCISE", "").strip()
+    if eid:
+        return drills_for_exercise(eid)
+    cid = os.environ.get("VOICE_COACH_CATEGORY", "").strip()
+    if cid:
+        return drills_for_category(cid)
+    return all_drills()

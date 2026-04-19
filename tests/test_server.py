@@ -406,10 +406,17 @@ def test_ws_model_inference_error_continues_session(server):
             assert "kaboom" in err["message"]
 
 
-def test_ws_completes_session_after_last_drill(server):
-    """Walking through all drills should end with session_done containing summary."""
+def test_ws_completes_session_after_last_drill(server, monkeypatch):
+    """Walking through all drills should end with session_done containing summary.
+
+    Scoped to a single exercise (vl_1, 4 drills) via env var so the test
+    stays fast and focused on the protocol — the full 69-drill walk is
+    already covered structurally by test_content.TestAllDrills.
+    """
+    monkeypatch.setenv("VOICE_COACH_EXERCISE", "vl_1")
     import content
     total = len(content.default_drill_set())
+    assert total == 4
 
     with TestClient(server["app"]) as client:
         with client.websocket_connect("/ws/coach") as ws:

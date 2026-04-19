@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   cancelSpeech,
+  createRecognizer,
   createRecorder,
   int16ToBase64,
+  isRecognitionAvailable,
   isTTSAvailable,
   primeTTS,
   speak,
   testSpeech,
+  type AudioAnalysis,
+  type RecognizerHandle,
   type RecorderHandle,
 } from '../lib/audio';
 import {
@@ -65,13 +69,27 @@ export default function CoachApp() {
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [transientError, setTransientError] = useState<string | null>(null);
   const [wsState, setWsState] = useState<string>('CONNECTING');
+  const [autoMode, setAutoMode] = useState(true);
+  // Live transcript while recording. We update on every recognizer event,
+  // not via forceTick — interim results arrive faster than 50 ms.
+  const [liveTranscript, setLiveTranscript] = useState<{
+    final: string;
+    interim: string;
+  }>({ final: '', interim: '' });
   const [, forceTick] = useState(0);
 
   const wsRef = useRef<Connection | null>(null);
   const recRef = useRef<RecorderHandle | null>(null);
+  const recognizerRef = useRef<RecognizerHandle | null>(null);
   const levelTimer = useRef<number | null>(null);
   // Track current phase via ref so async WS handlers don't read stale state.
   const phaseRef = useRef<Phase>('connecting');
+  const autoModeRef = useRef(autoMode);
+  // Forward refs for auto-mode callbacks defined inside `createRecorder` (VAD)
+  // and `speak()` (TTS onEnd). Using refs keeps the lambdas stable and avoids
+  // closing over stale `phase`/`autoMode` snapshots when async callbacks fire.
+  const startRecordingRef = useRef<() => Promise<void>>();
+  const stopRecordingRef = useRef<() => Promise<void>>();
   // StrictMode in dev runs effects twice. Without a guard we open two WS
   // connections per mount, which the server logs show happening.
   const wsInitialized = useRef(false);
@@ -79,6 +97,9 @@ export default function CoachApp() {
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
+  useEffect(() => {
+    autoModeRef.current = autoMode;
+  }, [autoMode]);
 
   // ---- WS lifecycle ------------------------------------------------------
 
@@ -120,6 +141,8 @@ export default function CoachApp() {
       ws.close();
       cancelSpeech();
       recRef.current?.cancel();
+      recognizerRef.current?.cancel();
+      recognizerRef.current = null;
       if (levelTimer.current !== null) window.clearInterval(levelTimer.current);
       wsInitialized.current = false;
     };
@@ -142,9 +165,24 @@ export default function CoachApp() {
         setDrill(msg);
         setMetrics(null);
         setCoach(null);
+        setLiveTranscript({ final: '', interim: '' });
         setTransientError(null);
         setPhase('drill');
-        speak(buildDrillTTS(msg));
+        speak(buildDrillTTS(msg), {
+          onEnd: ({ ok }) => {
+            // Auto-arm the mic the moment the prompt finishes reading.
+            // Only if we're still in 'drill' (user hasn't manually started,
+            // skipped, or finished the session) and auto-mode is on.
+            if (!autoModeRef.current) return;
+            if (phaseRef.current !== 'drill') return;
+            if (!ok) {
+              // TTS failed — still arm the mic so the user can keep going,
+              // but warn so they know why they didn't hear the prompt.
+              console.warn('[coach] TTS failed; auto-arming mic anyway');
+            }
+            startRecordingRef.current?.();
+          },
+        });
         return;
       case 'metrics':
         setMetrics(msg);
@@ -197,18 +235,55 @@ export default function CoachApp() {
     // Hard interrupt any in-flight TTS — we want a clean mic recording.
     cancelSpeech();
     setTransientError(null);
+    setLiveTranscript({ final: '', interim: '' });
+    // Defensive: stop + drop any leftover recorder from a prior turn.
+    // createRecorder is *one-shot* — its MediaStream is .stop()'d in
+    // the underlying stop() and can't be restarted. Always make a fresh one.
+    if (recRef.current) {
+      try { recRef.current.cancel(); } catch { /* ignore */ }
+      recRef.current = null;
+    }
+    if (recognizerRef.current) {
+      try { recognizerRef.current.cancel(); } catch { /* ignore */ }
+      recognizerRef.current = null;
+    }
     try {
-      if (!recRef.current) {
-        recRef.current = await createRecorder();
-      }
+      recRef.current = await createRecorder({
+        // VAD is the auto stop-recording trigger. When the user goes silent
+        // for `endHangoverMs` after having spoken, fire stopRecording().
+        // We always *enable* VAD in auto mode; the recorder's analysis
+        // numbers (rms/pitch/bands) are still computed either way for the
+        // visualisers.
+        vad: {
+          enabled: autoModeRef.current,
+          onSpeechStart: () => console.log('[coach vad] ▶ speech detected'),
+          onSpeechEnd: () => {
+            console.log('[coach vad] ■ silence after speech → auto-stop');
+            stopRecordingRef.current?.();
+          },
+        },
+      });
       await recRef.current.start();
       setPhase('recording');
-      // Force a re-render every 80ms so the live level meter animates.
+      // Force a re-render every 50ms so the live visualisers animate
+      // smoothly (matches the analyser tick rate).
       levelTimer.current = window.setInterval(
         () => forceTick((t) => t + 1),
-        80,
+        50,
       ) as unknown as number;
+
+      // Live transcript runs in parallel via the browser's SpeechRecognition.
+      // Failures here are non-fatal — recording proceeds without a transcript.
+      recognizerRef.current = createRecognizer({
+        onUpdate: (snap) => setLiveTranscript(snap),
+        onError: (err) => {
+          console.warn('[coach] recognizer error', err);
+        },
+      });
+      recognizerRef.current?.start();
     } catch (exc: any) {
+      console.error('[coach] startRecording failed', exc);
+      recRef.current = null;
       setTransientError(`Mic error: ${exc?.message ?? exc}`);
       setPhase('drill');
     }
@@ -221,29 +296,62 @@ export default function CoachApp() {
       levelTimer.current = null;
     }
     setPhase('thinking');
+    // Stop the live recognizer alongside the recorder so we don't keep
+    // streaming partials while the backend is computing its answer.
+    if (recognizerRef.current) {
+      try { recognizerRef.current.stop(); } catch { /* ignore */ }
+      recognizerRef.current = null;
+    }
+    // Hand off the recorder to a local var and clear the ref BEFORE awaiting,
+    // so a failed stop() leaves the next attempt with a clean slate.
+    const rec = recRef.current;
+    recRef.current = null;
     try {
-      const { pcm } = await recRef.current.stop();
-      recRef.current = null;
+      const { pcm, durationMs } = await rec.stop();
+      if (pcm.length === 0) {
+        setTransientError(
+          `No audio captured (${durationMs.toFixed(0)}ms). Try recording for at least half a second.`,
+        );
+        setPhase('drill');
+        return;
+      }
       wsRef.current?.send({
         type: 'audio',
         pcm_b64: int16ToBase64(pcm),
         sample_rate: 16000,
       });
     } catch (exc: any) {
+      console.error('[coach] stopRecording failed', exc);
       setTransientError(`Capture error: ${exc?.message ?? exc}`);
       setPhase('drill');
     }
   };
 
   const repeatPrompt = () => {
-    if (drill) speak(buildDrillTTS(drill));
+    if (drill) {
+      speak(buildDrillTTS(drill), {
+        onEnd: () => {
+          if (autoModeRef.current && phaseRef.current === 'drill') {
+            startRecordingRef.current?.();
+          }
+        },
+      });
+    }
   };
   const skipDrill = () => wsRef.current?.send({ type: 'command', action: 'skip' });
   const restSession = () => wsRef.current?.send({ type: 'command', action: 'rest' });
 
+  // Refresh forward refs every render so the latest closures (with current
+  // state) are what the async VAD / TTS callbacks reach for.
+  startRecordingRef.current = startRecording;
+  stopRecordingRef.current = stopRecording;
+
   // ---- Render ------------------------------------------------------------
 
-  const liveLevel = phase === 'recording' ? recRef.current?.level() ?? 0 : 0;
+  const analysis: AudioAnalysis | null =
+    phase === 'recording' ? recRef.current?.analysis() ?? null : null;
+  const liveLevel = analysis?.rms != null ? Math.min(1, analysis.rms * 4) : 0;
+  const liveScore = computeLiveScore(analysis, drill?.target_dbfs ?? -25);
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col px-6 py-10">
@@ -290,6 +398,11 @@ export default function CoachApp() {
               coach={coach}
               phase={phase}
               level={liveLevel}
+              analysis={analysis}
+              liveScore={liveScore}
+              transcript={liveTranscript}
+              autoMode={autoMode}
+              onToggleAuto={() => setAutoMode((v) => !v)}
               transientError={transientError}
               onStartRec={startRecording}
               onStopRec={stopRecording}
@@ -391,6 +504,11 @@ function SessionView({
   coach,
   phase,
   level,
+  analysis,
+  liveScore,
+  transcript,
+  autoMode,
+  onToggleAuto,
   transientError,
   onStartRec,
   onStopRec,
@@ -403,6 +521,11 @@ function SessionView({
   coach: CoachMsg | null;
   phase: Phase;
   level: number;
+  analysis: AudioAnalysis | null;
+  liveScore: LiveScore | null;
+  transcript: { final: string; interim: string };
+  autoMode: boolean;
+  onToggleAuto: () => void;
   transientError: string | null;
   onStartRec: () => void;
   onStopRec: () => void;
@@ -410,6 +533,14 @@ function SessionView({
   onSkip: () => void;
   onRest: () => void;
 }) {
+  // Show the transcript card whenever there's anything to show, OR while
+  // recording (so users see the placeholder calibrate as they begin to talk).
+  const showTranscript =
+    isRecognitionAvailable() &&
+    (phase === 'recording' ||
+      phase === 'thinking' ||
+      phase === 'feedback') &&
+    (transcript.final || transcript.interim || phase === 'recording');
   return (
     <div className="flex flex-col gap-4">
       <StageIndicator drill={drill} />
@@ -417,9 +548,21 @@ function SessionView({
       <MicButton
         phase={phase}
         level={level}
+        autoMode={autoMode}
+        speaking={analysis?.speaking ?? false}
         onStart={onStartRec}
         onStop={onStopRec}
       />
+      <LiveAnalyzer
+        analysis={analysis}
+        target_dbfs={drill.target_dbfs}
+        phase={phase}
+        liveScore={liveScore}
+      />
+      {showTranscript && (
+        <LiveTranscript transcript={transcript} phase={phase} />
+      )}
+      <AutoModeRow autoMode={autoMode} onToggle={onToggleAuto} phase={phase} />
       {metrics && <MetricsLine metrics={metrics} target={drill.target_dbfs} />}
       {coach && <CoachCard coach={coach} />}
       {transientError && <TransientError message={transientError} />}
@@ -528,26 +671,36 @@ function PromptCard({
 function MicButton({
   phase,
   level,
+  autoMode,
+  speaking,
   onStart,
   onStop,
 }: {
   phase: Phase;
   level: number;
+  autoMode: boolean;
+  speaking: boolean;
   onStart: () => void;
   onStop: () => void;
 }) {
   const isRecording = phase === 'recording';
   const isThinking = phase === 'thinking';
+  const isDrill = phase === 'drill';
   const disabled = isThinking;
 
   const ringScale = isRecording ? 1 + level * 0.6 : 1;
+  const ringTone = isRecording
+    ? speaking
+      ? 'bg-emerald-400/25'
+      : 'bg-rose-500/20'
+    : 'bg-transparent';
 
   return (
     <div className="my-4 flex flex-col items-center gap-2">
       <div className="relative">
         {isRecording && (
           <div
-            className="absolute inset-0 rounded-full bg-rose-500/20 transition-transform duration-100"
+            className={`absolute inset-0 rounded-full transition-transform duration-100 ${ringTone}`}
             style={{ transform: `scale(${ringScale})` }}
           />
         )}
@@ -557,7 +710,9 @@ function MicButton({
           className={
             'relative flex h-24 w-24 items-center justify-center rounded-full text-3xl font-semibold transition active:scale-95 ' +
             (isRecording
-              ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/40'
+              ? speaking
+                ? 'bg-emerald-500 text-zinc-950 shadow-lg shadow-emerald-500/40'
+                : 'bg-rose-500 text-white shadow-lg shadow-rose-500/40'
               : isThinking
               ? 'bg-zinc-700 text-zinc-400'
               : 'bg-emerald-500 text-zinc-950 shadow-lg shadow-emerald-500/30 hover:bg-emerald-400')
@@ -575,9 +730,17 @@ function MicButton({
       </div>
       <div className="text-xs text-zinc-500">
         {isRecording
-          ? 'Tap to stop'
+          ? speaking
+            ? autoMode
+              ? 'Listening… stop talking when finished'
+              : 'Recording — tap to stop'
+            : autoMode
+            ? 'Mic open — start speaking'
+            : 'Recording — tap to stop'
           : isThinking
-          ? 'Coach is listening…'
+          ? 'Coach is thinking…'
+          : isDrill && autoMode
+          ? 'Coach is reading the prompt — mic will arm automatically'
           : 'Tap to record your attempt'}
       </div>
     </div>
@@ -596,6 +759,411 @@ function MetricsLine({
       captured {metrics.duration_s.toFixed(1)}s · loudness{' '}
       {metrics.dbfs == null ? '—' : `${metrics.dbfs.toFixed(1)} dBFS`} (target{' '}
       {target.toFixed(1)} dBFS)
+    </div>
+  );
+}
+
+// ---- Live visualisers ----------------------------------------------------
+//
+// Renders four parameters in real-time while the mic is open:
+//   • a horizontal loudness meter with the drill's target dBFS marker
+//   • per-band spectrum bars (8 bands, log-spaced across the voice range)
+//   • dominant-pitch readout (F0 in 80-400 Hz)
+//   • voice-activity lamp (driven by the same hysteresis VAD that auto-stops)
+//
+// The component is only meaningful while `phase === 'recording'` (since
+// that's when `analysis` is non-null), but it renders a calm "idle" state
+// during 'drill' / 'thinking' / 'feedback' so the layout doesn't jump.
+
+const BAND_LABELS = ['80', '160', '320', '500', '800', '1.3k', '2.1k', '3.3k'];
+
+function LiveAnalyzer({
+  analysis,
+  target_dbfs,
+  phase,
+  liveScore,
+}: {
+  analysis: AudioAnalysis | null;
+  target_dbfs: number;
+  phase: Phase;
+  liveScore: LiveScore | null;
+}) {
+  const recording = phase === 'recording';
+  // Map dBFS to a 0..1 bar position. -60 dBFS reads as 0, 0 dBFS as 1.
+  // Below -60 dBFS we treat as silence (bar pinned to 0). The target marker
+  // uses the same mapping so it sits at the right spot on the meter.
+  const dbfsToFrac = (db: number) => {
+    if (!isFinite(db)) return 0;
+    return Math.max(0, Math.min(1, (db + 60) / 60));
+  };
+
+  const dbfs = analysis?.dbfs ?? -Infinity;
+  const loudFrac = dbfsToFrac(dbfs);
+  const targetFrac = dbfsToFrac(target_dbfs);
+  const onTarget =
+    isFinite(dbfs) && Math.abs(dbfs - target_dbfs) <= 4 && recording;
+
+  const bands = analysis?.bands ?? new Array(8).fill(0);
+  const pitchHz = analysis?.pitchHz ?? null;
+  const speaking = (analysis?.speaking ?? false) && recording;
+
+  return (
+    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
+      <div className="mb-3 flex items-center justify-between text-[10px] uppercase tracking-wider text-zinc-500">
+        <span>Live signal</span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className={
+              'inline-block h-2 w-2 rounded-full transition ' +
+              (speaking
+                ? 'bg-emerald-400 shadow-[0_0_6px_2px_rgba(52,211,153,0.6)]'
+                : recording
+                ? 'bg-zinc-600'
+                : 'bg-zinc-700')
+            }
+          />
+          {speaking ? 'voice' : recording ? 'silence' : 'idle'}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-[1fr_auto] gap-4">
+        <div className="flex flex-col gap-3">
+          <LoudnessMeter
+            loudFrac={loudFrac}
+            targetFrac={targetFrac}
+            dbfs={dbfs}
+            target_dbfs={target_dbfs}
+            onTarget={onTarget}
+            active={recording}
+          />
+          <div className="grid grid-cols-[1fr_auto] gap-4">
+            <SpectrumBars bands={bands} active={recording} />
+            <PitchGauge pitchHz={pitchHz} active={recording && speaking} />
+          </div>
+        </div>
+        <ScoreGauge score={liveScore} active={recording} />
+      </div>
+    </div>
+  );
+}
+
+interface LiveScore {
+  /** 0..100 composite score, latest frame. */
+  total: number;
+  /** 0..100 sub-score: how close current dBFS is to target_dbfs. */
+  loudness: number;
+  /** 0..100 sub-score: % of frames since recording-start that were voiced. */
+  voicing: number;
+}
+
+function computeLiveScore(
+  analysis: AudioAnalysis | null,
+  target_dbfs: number,
+): LiveScore | null {
+  if (!analysis) return null;
+  // Loudness sub-score: gaussian falloff from target. Within ±3 dB ≈ 100,
+  // ±10 dB ≈ 50, ±20 dB ≈ 6. Treats silence (no finite dBFS) as 0.
+  let loudness = 0;
+  if (isFinite(analysis.dbfs)) {
+    const diff = analysis.dbfs - target_dbfs;
+    loudness = 100 * Math.exp(-Math.pow(diff / 10, 2));
+  }
+  // Voicing sub-score: cumulative voiced ratio. Cap at 70% (≈ realistic for
+  // sustained speech with natural pauses) so the user doesn't need 100%
+  // voicing to score full marks.
+  const voicing = Math.min(100, (analysis.voicedRatio / 0.7) * 100);
+  const total = 0.6 * loudness + 0.4 * voicing;
+  return {
+    total: Math.round(total),
+    loudness: Math.round(loudness),
+    voicing: Math.round(voicing),
+  };
+}
+
+function ScoreGauge({
+  score,
+  active,
+}: {
+  score: LiveScore | null;
+  active: boolean;
+}) {
+  // SVG circular meter. Stroke-dasharray trick: full circumference = 220, the
+  // dash length tracks the score percentage. Color tier matches the bar
+  // gradient: rose < 40 < amber < 70 < emerald.
+  const value = active ? score?.total ?? 0 : 0;
+  const SIZE = 96;
+  const STROKE = 8;
+  const R = (SIZE - STROKE) / 2;
+  const C = 2 * Math.PI * R;
+  const dash = (value / 100) * C;
+  const ringColor =
+    !active
+      ? 'stroke-zinc-700'
+      : value >= 70
+      ? 'stroke-emerald-400'
+      : value >= 40
+      ? 'stroke-amber-400'
+      : 'stroke-rose-400';
+  return (
+    <div className="flex w-28 flex-col items-center">
+      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+        Score
+      </div>
+      <div className="relative mt-2">
+        <svg width={SIZE} height={SIZE} className="-rotate-90">
+          <circle
+            cx={SIZE / 2}
+            cy={SIZE / 2}
+            r={R}
+            strokeWidth={STROKE}
+            className="fill-none stroke-zinc-800"
+          />
+          <circle
+            cx={SIZE / 2}
+            cy={SIZE / 2}
+            r={R}
+            strokeWidth={STROKE}
+            strokeLinecap="round"
+            strokeDasharray={`${dash.toFixed(2)} ${C.toFixed(2)}`}
+            className={`fill-none transition-[stroke-dasharray,stroke] duration-150 ${ringColor}`}
+          />
+        </svg>
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <span
+            className={
+              'text-2xl font-semibold tabular-nums ' +
+              (active ? 'text-zinc-100' : 'text-zinc-600')
+            }
+          >
+            {active ? value : '—'}
+          </span>
+          <span className="text-[9px] uppercase tracking-wider text-zinc-500">
+            / 100
+          </span>
+        </div>
+      </div>
+      {active && score && (
+        <div className="mt-1 grid w-full grid-cols-2 gap-1 text-center font-mono text-[9px] text-zinc-500">
+          <span>L {score.loudness}</span>
+          <span>V {score.voicing}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LiveTranscript({
+  transcript,
+  phase,
+}: {
+  transcript: { final: string; interim: string };
+  phase: Phase;
+}) {
+  const recording = phase === 'recording';
+  const empty = !transcript.final && !transcript.interim;
+  return (
+    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
+      <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-zinc-500">
+        <span>Live transcript</span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className={
+              'inline-block h-1.5 w-1.5 rounded-full ' +
+              (recording
+                ? 'animate-pulse bg-emerald-400'
+                : phase === 'thinking'
+                ? 'bg-amber-400'
+                : 'bg-zinc-600')
+            }
+          />
+          {recording ? 'live' : phase === 'thinking' ? 'finalising' : 'captured'}
+        </span>
+      </div>
+      <div className="min-h-[3.5rem] text-base leading-snug">
+        {empty ? (
+          <span className="text-sm italic text-zinc-600">
+            {recording
+              ? 'Start speaking — your words will appear here.'
+              : 'Nothing transcribed.'}
+          </span>
+        ) : (
+          <>
+            <span className="text-zinc-100">{transcript.final}</span>
+            {transcript.interim && (
+              <>
+                {transcript.final && ' '}
+                <span className="italic text-zinc-400">
+                  {transcript.interim}
+                </span>
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LoudnessMeter({
+  loudFrac,
+  targetFrac,
+  dbfs,
+  target_dbfs,
+  onTarget,
+  active,
+}: {
+  loudFrac: number;
+  targetFrac: number;
+  dbfs: number;
+  target_dbfs: number;
+  onTarget: boolean;
+  active: boolean;
+}) {
+  // Visual ramp: dim → emerald → amber when over-driven. The ramp is purely
+  // the bar's gradient; the absolute value still comes from `loudFrac`.
+  const barTone = !active
+    ? 'from-zinc-700 to-zinc-700'
+    : loudFrac > 0.85
+    ? 'from-amber-500 to-rose-500'
+    : onTarget
+    ? 'from-emerald-500 to-emerald-300'
+    : 'from-emerald-600/80 to-emerald-400/80';
+  return (
+    <div>
+      <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-zinc-500">
+        <span>Loudness</span>
+        <span className="font-mono normal-case tracking-normal text-zinc-400">
+          {active && isFinite(dbfs) ? `${dbfs.toFixed(1)} dBFS` : '—'}
+          <span className="ml-2 text-zinc-600">
+            target {target_dbfs.toFixed(0)}
+          </span>
+        </span>
+      </div>
+      <div className="relative mt-1.5 h-3 w-full overflow-hidden rounded-full bg-zinc-800">
+        <div
+          className={`h-full rounded-full bg-gradient-to-r transition-[width] duration-75 ${barTone}`}
+          style={{ width: `${(loudFrac * 100).toFixed(1)}%` }}
+        />
+        {/* Target marker: vertical line at targetFrac. */}
+        <div
+          className="pointer-events-none absolute top-[-2px] h-[calc(100%+4px)] w-0.5 bg-zinc-300/80"
+          style={{ left: `calc(${(targetFrac * 100).toFixed(1)}% - 1px)` }}
+          title={`target ${target_dbfs.toFixed(1)} dBFS`}
+        />
+      </div>
+    </div>
+  );
+}
+
+function SpectrumBars({ bands, active }: { bands: number[]; active: boolean }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+        Spectrum (Hz)
+      </div>
+      <div className="mt-2 flex h-20 items-end gap-1.5">
+        {bands.map((v, i) => {
+          // Apply a gentle non-linear curve so quiet bands still register
+          // visually. The raw values from the analyser cluster low when
+          // speech is soft; sqrt() gives a friendlier shape.
+          const height = active ? Math.sqrt(Math.max(0, Math.min(1, v))) : 0;
+          return (
+            <div
+              key={i}
+              className="flex flex-1 flex-col items-center justify-end gap-1"
+            >
+              <div className="flex h-full w-full items-end">
+                <div
+                  className={
+                    'w-full rounded-sm transition-[height] duration-75 ' +
+                    (active
+                      ? 'bg-gradient-to-t from-emerald-500 to-emerald-300'
+                      : 'bg-zinc-800')
+                  }
+                  style={{ height: `${(height * 100).toFixed(1)}%` }}
+                />
+              </div>
+              <div className="text-[9px] text-zinc-600">{BAND_LABELS[i]}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PitchGauge({
+  pitchHz,
+  active,
+}: {
+  pitchHz: number | null;
+  active: boolean;
+}) {
+  // Fixed gauge range covering typical adult speech F0.
+  const MIN = 80;
+  const MAX = 400;
+  const value = pitchHz != null ? Math.max(MIN, Math.min(MAX, pitchHz)) : null;
+  const frac = value != null ? (value - MIN) / (MAX - MIN) : 0;
+  return (
+    <div className="flex w-24 flex-col items-stretch">
+      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+        Pitch
+      </div>
+      <div className="relative mt-2 flex h-20 w-full items-end justify-center rounded-md border border-zinc-800 bg-zinc-950/40">
+        {/* Vertical pitch column (bottom = 80 Hz, top = 400 Hz). */}
+        <div className="relative h-full w-2 rounded-full bg-zinc-800/70">
+          {value != null && (
+            <div
+              className="absolute left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-sky-400 shadow-[0_0_6px_2px_rgba(56,189,248,0.5)] transition-[bottom] duration-100"
+              style={{ bottom: `${(frac * 100).toFixed(1)}%` }}
+            />
+          )}
+        </div>
+      </div>
+      <div className="mt-1 text-center font-mono text-[11px] text-zinc-400">
+        {active && value != null ? `${Math.round(value)} Hz` : '—'}
+      </div>
+    </div>
+  );
+}
+
+function AutoModeRow({
+  autoMode,
+  onToggle,
+  phase,
+}: {
+  autoMode: boolean;
+  onToggle: () => void;
+  phase: Phase;
+}) {
+  // Toggling mid-recording would leave the VAD in an inconsistent state.
+  // It's harmless but confusing — disable while a turn is in flight.
+  const disabled = phase === 'recording' || phase === 'thinking';
+  return (
+    <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-2 text-xs text-zinc-400">
+      <span>
+        Auto mic{' '}
+        <span className="text-zinc-600">
+          (arms after the prompt, stops when you go quiet)
+        </span>
+      </span>
+      <button
+        onClick={onToggle}
+        disabled={disabled}
+        className={
+          'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-40 ' +
+          (autoMode ? 'bg-emerald-500' : 'bg-zinc-700')
+        }
+        aria-pressed={autoMode}
+        aria-label="Toggle auto mic"
+      >
+        <span
+          className={
+            'inline-block h-4 w-4 transform rounded-full bg-white transition ' +
+            (autoMode ? 'translate-x-6' : 'translate-x-1')
+          }
+        />
+      </button>
     </div>
   );
 }
