@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  cancelServerSpeech,
   cancelSpeech,
   createRecognizer,
   createRecorder,
   int16ToBase64,
   isRecognitionAvailable,
   isTTSAvailable,
+  playWavBase64,
   primeTTS,
   speak,
   testSpeech,
@@ -18,6 +20,7 @@ import {
   type CoachMsg,
   type Connection,
   type DrillMsg,
+  type IntentResultMsg,
   type MetricsMsg,
   type ServerMessage,
   type SummaryMsg,
@@ -76,11 +79,40 @@ export default function CoachApp() {
     final: string;
     interim: string;
   }>({ final: '', interim: '' });
+  // Intent router state. `commandPhase` reflects what the inline
+  // action-bar mic is doing (idle / listening / thinking); the
+  // `intentResult` chip below shows the latest FunctionGemma 270M
+  // verdict and the Whisper STT latency.
+  const [commandPhase, setCommandPhase] = useState<
+    'idle' | 'listening' | 'thinking'
+  >('idle');
+  const [intentResult, setIntentResult] = useState<IntentResultMsg | null>(
+    null,
+  );
   const [, forceTick] = useState(0);
 
   const wsRef = useRef<Connection | null>(null);
   const recRef = useRef<RecorderHandle | null>(null);
   const recognizerRef = useRef<RecognizerHandle | null>(null);
+  // Dedicated PCM recorder for the "say a command" channel. Independent
+  // of the drill recorder so a command capture can run while a drill
+  // response is in flight without sharing state. The captured PCM is
+  // sent to the backend (Cactus Whisper transcribes there) — the
+  // browser's SpeechRecognition is no longer used for command audio,
+  // because on Chrome it routes audio through Google's cloud STT and
+  // breaks the on-device privacy story.
+  const cmdRecorderRef = useRef<RecorderHandle | null>(null);
+  const cmdTimeoutRef = useRef<number | null>(null);
+  // True while we're suppressing the drill mic auto-arm because a
+  // server-rendered TTS clip is still playing. Different from the
+  // browser-TTS gate (`pendingUtterances`) because Audio.play() runs
+  // in its own promise lane.
+  const serverTtsPlayingRef = useRef(false);
+  // Whether the BACKEND will render TTS (macOS `say`) for us. Snapped
+  // from the `ready` frame and never changed mid-session, so the two
+  // TTS engines (browser speechSynthesis + server WAV) never race and
+  // we never end up with both voices speaking the same line.
+  const serverTtsAvailableRef = useRef(false);
   const levelTimer = useRef<number | null>(null);
   // Track current phase via ref so async WS handlers don't read stale state.
   const phaseRef = useRef<Phase>('connecting');
@@ -140,9 +172,16 @@ export default function CoachApp() {
       console.log('[coach] cleanup: closing WS');
       ws.close();
       cancelSpeech();
+      cancelServerSpeech();
       recRef.current?.cancel();
       recognizerRef.current?.cancel();
       recognizerRef.current = null;
+      cmdRecorderRef.current?.cancel();
+      cmdRecorderRef.current = null;
+      if (cmdTimeoutRef.current !== null) {
+        window.clearTimeout(cmdTimeoutRef.current);
+        cmdTimeoutRef.current = null;
+      }
       if (levelTimer.current !== null) window.clearInterval(levelTimer.current);
       wsInitialized.current = false;
     };
@@ -155,6 +194,11 @@ export default function CoachApp() {
         setPhase('loading');
         return;
       case 'ready': {
+        // Lock in the TTS source for the whole session. Re-snapping
+        // mid-session would race in-flight `coach` replies, so we
+        // only ever read this on the first `ready` we see per
+        // connection.
+        serverTtsAvailableRef.current = msg.tts_available === true;
         const p = phaseRef.current;
         if (p !== 'drill' && p !== 'recording' && p !== 'thinking') {
           setPhase('ready');
@@ -168,20 +212,20 @@ export default function CoachApp() {
         setLiveTranscript({ final: '', interim: '' });
         setTransientError(null);
         setPhase('drill');
-        speak(buildDrillTTS(msg), {
-          onEnd: ({ ok }) => {
-            // Auto-arm the mic the moment the prompt finishes reading.
-            // Only if we're still in 'drill' (user hasn't manually started,
-            // skipped, or finished the session) and auto-mode is on.
-            if (!autoModeRef.current) return;
-            if (phaseRef.current !== 'drill') return;
-            if (!ok) {
-              // TTS failed — still arm the mic so the user can keep going,
-              // but warn so they know why they didn't hear the prompt.
-              console.warn('[coach] TTS failed; auto-arming mic anyway');
-            }
-            startRecordingRef.current?.();
-          },
+        // ONE voice for the entire session. If the backend rendered
+        // the prompt with `say` and shipped a wav, play THAT (same
+        // engine the coach reply uses). Otherwise speak via browser
+        // TTS. Mixing the two is what makes it sound like "both my
+        // laptop and the on-device model are speaking" — alternating
+        // engines on every turn.
+        speakDrillPrompt(msg, () => {
+          // Auto-arm the mic the moment the prompt finishes reading.
+          // Only if we're still in 'drill' (user hasn't manually
+          // started, skipped, or finished the session) and auto-mode
+          // is on.
+          if (!autoModeRef.current) return;
+          if (phaseRef.current !== 'drill') return;
+          startRecordingRef.current?.();
         });
         return;
       case 'metrics':
@@ -193,14 +237,53 @@ export default function CoachApp() {
       case 'coach': {
         setCoach(msg);
         setPhase('feedback');
-        const spoken = joinForSpeech(msg.ack, msg.feedback);
-        if (spoken) speak(spoken);
+        // EXACTLY ONE TTS source. If the backend reported it can
+        // render via `say`, we wait for the `audio_reply` frame and
+        // do nothing here — no racy fallback timer that would queue
+        // a SECOND voice (the browser TTS) on top. If the backend
+        // can't TTS, speak immediately via the browser.
+        if (!serverTtsAvailableRef.current) {
+          const spoken = joinForSpeech(msg.ack, msg.feedback);
+          if (spoken) speak(spoken);
+        }
+        return;
+      }
+      case 'audio_reply': {
+        // Server-rendered TTS arrived. We never queued a browser
+        // utterance for this turn (server-tts mode), so there is
+        // nothing to cancel — just play the WAV.
+        serverTtsPlayingRef.current = true;
+        playWavBase64(msg.wav_b64)
+          .catch((e) => {
+            console.warn('[coach] server TTS playback failed', e);
+            // Last-ditch only on actual playback failure: read the
+            // current coach text via the browser so the user hears
+            // SOMETHING. This is the only path that can produce
+            // double-voice and only fires when WAV playback errors.
+            const text = joinForSpeech(coach?.ack ?? '', coach?.feedback ?? '');
+            if (text) speak(text);
+          })
+          .finally(() => {
+            serverTtsPlayingRef.current = false;
+          });
         return;
       }
       case 'advance':
       case 'retry':
       case 'rest':
         // Visual cue handled by next 'drill' or 'session_done' message.
+        return;
+      case 'intent_result':
+        // Command-channel verdict from FunctionGemma 270M (or the regex
+        // fallback). The action — if any — was already dispatched
+        // server-side, so we only update the visible chip + transcript.
+        setIntentResult(msg);
+        setCommandPhase('idle');
+        if (msg.action === 'none') {
+          setTransientError(
+            `Didn't catch a command in "${msg.utterance || '…'}". Try "skip", "repeat", or "I'm tired".`,
+          );
+        }
         return;
       case 'session_done':
         setSummary(msg.summary);
@@ -234,6 +317,7 @@ export default function CoachApp() {
   const startRecording = async () => {
     // Hard interrupt any in-flight TTS — we want a clean mic recording.
     cancelSpeech();
+    cancelServerSpeech();
     setTransientError(null);
     setLiveTranscript({ final: '', interim: '' });
     // Defensive: stop + drop any leftover recorder from a prior turn.
@@ -327,19 +411,147 @@ export default function CoachApp() {
     }
   };
 
+  // Centralised drill-prompt TTS. Reads the same `serverTtsAvailableRef`
+  // gate the coach-reply path uses, so the same TTS engine speaks the
+  // entire session — no alternating voices. If the server shipped a
+  // pre-rendered wav, play it; if not (server doesn't have `say`, or
+  // render failed for this drill), fall back to browser speechSynthesis.
+  const speakDrillPrompt = (msg: DrillMsg, onDone?: () => void) => {
+    const fire = () => {
+      try { onDone?.(); } catch (e) { console.warn('[coach] onDone threw', e); }
+    };
+    if (msg.prompt_wav_b64) {
+      // Cancel any browser TTS that might be queued from a prior turn.
+      cancelSpeech();
+      playWavBase64(msg.prompt_wav_b64)
+        .catch((e) => {
+          console.warn('[coach] drill prompt wav failed, using browser TTS', e);
+          // Last-ditch fallback so the user still hears the prompt.
+          speak(buildDrillTTS(msg), { onEnd: () => fire() });
+        })
+        .then(fire);
+      return;
+    }
+    speak(buildDrillTTS(msg), {
+      onEnd: ({ ok }) => {
+        if (!ok) console.warn('[coach] drill TTS failed; arming mic anyway');
+        fire();
+      },
+    });
+  };
+
   const repeatPrompt = () => {
     if (drill) {
-      speak(buildDrillTTS(drill), {
-        onEnd: () => {
-          if (autoModeRef.current && phaseRef.current === 'drill') {
-            startRecordingRef.current?.();
-          }
-        },
+      speakDrillPrompt(drill, () => {
+        if (autoModeRef.current && phaseRef.current === 'drill') {
+          startRecordingRef.current?.();
+        }
       });
     }
   };
   const skipDrill = () => wsRef.current?.send({ type: 'command', action: 'skip' });
   const restSession = () => wsRef.current?.send({ type: 'command', action: 'rest' });
+
+  // ---- Voice-command channel (Cactus Whisper + FunctionGemma 270M) -------
+  //
+  // Independent of the drill mic. We capture raw PCM with the same
+  // pipeline the drill loop uses, ship it to /ws/coach as
+  // { type: "intent_audio", pcm_b64 }, and the backend transcribes
+  // on-device with Cactus Whisper before routing the text through
+  // FunctionGemma 270M. NO browser SpeechRecognition: that API
+  // routes audio through Google's cloud STT on Chrome and would
+  // break the on-device privacy story this whole project is built on.
+  //
+  // Typed commands still go through `{ type: "intent", utterance }`
+  // (no audio, no Whisper) for users without a mic and for demo flow.
+
+  // Hard cap so a forgotten button never hangs the mic. Most command
+  // utterances are < 2 s; VAD-driven auto-stop handles the common case.
+  const CMD_CAPTURE_MS = 5000;
+
+  const cancelVoiceCommand = () => {
+    if (cmdTimeoutRef.current !== null) {
+      window.clearTimeout(cmdTimeoutRef.current);
+      cmdTimeoutRef.current = null;
+    }
+    if (cmdRecorderRef.current) {
+      try { cmdRecorderRef.current.cancel(); } catch { /* ignore */ }
+      cmdRecorderRef.current = null;
+    }
+    setCommandPhase('idle');
+  };
+
+  // Helper to stop the command recorder, base64 the PCM, and ship
+  // it. Idempotent — once it fires we clear refs so VAD/timeout
+  // races don't double-send.
+  const finaliseVoiceCommand = async () => {
+    if (cmdTimeoutRef.current !== null) {
+      window.clearTimeout(cmdTimeoutRef.current);
+      cmdTimeoutRef.current = null;
+    }
+    const rec = cmdRecorderRef.current;
+    cmdRecorderRef.current = null;
+    if (!rec) return;
+    setCommandPhase('thinking');
+    try {
+      const { pcm, durationMs } = await rec.stop();
+      if (pcm.length === 0 || durationMs < 250) {
+        setCommandPhase('idle');
+        setTransientError(
+          `No command heard (${durationMs.toFixed(0)} ms captured).`,
+        );
+        return;
+      }
+      wsRef.current?.send({
+        type: 'intent_audio',
+        pcm_b64: int16ToBase64(pcm),
+        sample_rate: 16000,
+      });
+    } catch (exc: any) {
+      console.error('[coach cmd] capture failed', exc);
+      setCommandPhase('idle');
+      setTransientError(`Command mic error: ${exc?.message ?? exc}`);
+    }
+  };
+
+  const startVoiceCommand = async () => {
+    if (commandPhase !== 'idle') {
+      cancelVoiceCommand();
+      return;
+    }
+    setIntentResult(null);
+    setTransientError(null);
+    setCommandPhase('listening');
+    // Same sample format the drill mic uses (16 kHz mono Int16). The
+    // backend's Whisper holder expects exactly that.
+    try {
+      const recorder = await createRecorder({
+        vad: {
+          enabled: true,
+          // Trip the auto-stop a bit faster than the drill mic so a
+          // quick "skip" doesn't keep the mic open after the word.
+          endHangoverMs: 600,
+          onSpeechEnd: () => {
+            console.log('[coach cmd vad] silence after speech → finalise');
+            finaliseVoiceCommand();
+          },
+        },
+      });
+      await recorder.start();
+      cmdRecorderRef.current = recorder;
+    } catch (exc: any) {
+      console.error('[coach cmd] startRecording failed', exc);
+      setCommandPhase('idle');
+      setTransientError(`Mic error: ${exc?.message ?? exc}`);
+      return;
+    }
+    // Hard timeout safety net in case VAD never fires (silent room,
+    // mic muted, etc.) so the panel never stays stuck on "Listening".
+    cmdTimeoutRef.current = window.setTimeout(() => {
+      cmdTimeoutRef.current = null;
+      finaliseVoiceCommand();
+    }, CMD_CAPTURE_MS) as unknown as number;
+  };
 
   // Refresh forward refs every render so the latest closures (with current
   // state) are what the async VAD / TTS callbacks reach for.
@@ -409,6 +621,10 @@ export default function CoachApp() {
               onRepeat={repeatPrompt}
               onSkip={skipDrill}
               onRest={restSession}
+              commandPhase={commandPhase}
+              intentResult={intentResult}
+              onStartCommand={startVoiceCommand}
+              onCancelCommand={cancelVoiceCommand}
             />
           )}
 
@@ -515,6 +731,10 @@ function SessionView({
   onRepeat,
   onSkip,
   onRest,
+  commandPhase,
+  intentResult,
+  onStartCommand,
+  onCancelCommand,
 }: {
   drill: DrillMsg;
   metrics: MetricsMsg | null;
@@ -532,6 +752,10 @@ function SessionView({
   onRepeat: () => void;
   onSkip: () => void;
   onRest: () => void;
+  commandPhase: 'idle' | 'listening' | 'thinking';
+  intentResult: IntentResultMsg | null;
+  onStartCommand: () => void;
+  onCancelCommand: () => void;
 }) {
   // Show the transcript card whenever there's anything to show, OR while
   // recording (so users see the placeholder calibrate as they begin to talk).
@@ -553,6 +777,19 @@ function SessionView({
         onStart={onStartRec}
         onStop={onStopRec}
       />
+      {/* One thin action bar inline with the mic — no separate panel
+          at the bottom. Voice commands invoke the same actions as
+          the pills; chip below shows the routed verdict + latencies. */}
+      <ActionBar
+        commandPhase={commandPhase}
+        intentResult={intentResult}
+        onRepeat={onRepeat}
+        onSkip={onSkip}
+        onRest={onRest}
+        onStartCommand={onStartCommand}
+        onCancelCommand={onCancelCommand}
+        disabled={phase === 'recording' || phase === 'thinking'}
+      />
       <LiveAnalyzer
         analysis={analysis}
         target_dbfs={drill.target_dbfs}
@@ -566,11 +803,6 @@ function SessionView({
       {metrics && <MetricsLine metrics={metrics} target={drill.target_dbfs} />}
       {coach && <CoachCard coach={coach} />}
       {transientError && <TransientError message={transientError} />}
-      <ActionsRow
-        onSkip={onSkip}
-        onRest={onRest}
-        disableSkip={phase === 'recording' || phase === 'thinking'}
-      />
     </div>
   );
 }
@@ -1240,30 +1472,173 @@ function TransientError({ message }: { message: string }) {
   );
 }
 
-function ActionsRow({
+// ---- ActionBar: single inline row of controls below the mic --------------
+//
+// One thin toolbar instead of a chunky "Commands" card at the bottom.
+// Three quick-action chips for direct taps + one mic chip that captures
+// PCM and ships it to Cactus Whisper → FunctionGemma 270M. The intent
+// result (with Whisper + router latencies) appears as a small line
+// underneath the bar so judges can still see the on-device routing
+// happening in real time.
+
+function ActionBar({
+  commandPhase,
+  intentResult,
+  onRepeat,
   onSkip,
   onRest,
-  disableSkip,
+  onStartCommand,
+  onCancelCommand,
+  disabled,
 }: {
+  commandPhase: 'idle' | 'listening' | 'thinking';
+  intentResult: IntentResultMsg | null;
+  onRepeat: () => void;
   onSkip: () => void;
   onRest: () => void;
-  disableSkip: boolean;
+  onStartCommand: () => void;
+  onCancelCommand: () => void;
+  disabled: boolean;
 }) {
+  const isCmdActive = commandPhase !== 'idle';
+  const cmdDisabled = disabled || commandPhase === 'thinking';
+  const cmdTone =
+    commandPhase === 'listening'
+      ? 'border-rose-500/40 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25'
+      : commandPhase === 'thinking'
+      ? 'border-zinc-700 bg-zinc-800/60 text-zinc-400'
+      : 'border-sky-500/40 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20';
+  const cmdLabel =
+    commandPhase === 'listening'
+      ? 'Listening — tap to stop'
+      : commandPhase === 'thinking'
+      ? 'Routing…'
+      : 'Say a command';
+
   return (
-    <div className="mt-2 flex justify-center gap-3 text-sm">
-      <button
-        onClick={onSkip}
-        disabled={disableSkip}
-        className="rounded-full border border-zinc-800 bg-zinc-900/40 px-4 py-1.5 text-zinc-400 transition hover:bg-zinc-800/60 hover:text-zinc-200 disabled:opacity-40"
-      >
-        Skip drill
-      </button>
-      <button
-        onClick={onRest}
-        className="rounded-full border border-zinc-800 bg-zinc-900/40 px-4 py-1.5 text-zinc-400 transition hover:bg-zinc-800/60 hover:text-zinc-200"
-      >
-        End session
-      </button>
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        <ChipButton
+          label="↺ Repeat"
+          onClick={onRepeat}
+          disabled={cmdDisabled}
+          tone="neutral"
+        />
+        <ChipButton
+          label="⏭ Skip"
+          onClick={onSkip}
+          disabled={cmdDisabled}
+          tone="neutral"
+        />
+        <ChipButton
+          label="⏹ End"
+          onClick={onRest}
+          disabled={commandPhase === 'thinking'}
+          tone="danger"
+        />
+        <span className="mx-1 hidden text-zinc-700 sm:inline">·</span>
+        <button
+          type="button"
+          onClick={isCmdActive ? onCancelCommand : onStartCommand}
+          disabled={cmdDisabled}
+          title="Voice command via Cactus Whisper + FunctionGemma 270M"
+          className={
+            'rounded-full border px-3 py-1.5 text-sm transition disabled:opacity-40 ' +
+            cmdTone
+          }
+        >
+          {commandPhase === 'listening' && (
+            <span className="mr-1.5 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-rose-300" />
+          )}
+          {cmdLabel}
+        </button>
+      </div>
+      {intentResult && <IntentResultChip result={intentResult} />}
+    </div>
+  );
+}
+
+function ChipButton({
+  label,
+  onClick,
+  disabled,
+  tone,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled: boolean;
+  tone: 'neutral' | 'danger';
+}) {
+  // "End" is destructive enough that we tone it differently so the
+  // user (often elderly, often shaky) doesn't tap it by mistake.
+  const cls =
+    tone === 'danger'
+      ? 'border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
+      : 'border-zinc-700 bg-zinc-900/50 text-zinc-200 hover:bg-zinc-800/70';
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={
+        'rounded-full border px-3 py-1.5 text-sm transition disabled:opacity-40 ' +
+        cls
+      }
+    >
+      {label}
+    </button>
+  );
+}
+
+function IntentResultChip({ result }: { result: IntentResultMsg }) {
+  const isNone = result.action === 'none';
+  const sourceLabel =
+    result.source === 'functiongemma'
+      ? 'FunctionGemma 270M'
+      : 'Regex fallback';
+  // Friendly labels for the routed action — matches the button copy.
+  const actionLabel: Record<IntentResultMsg['action'], string> = {
+    skip: 'Skip drill',
+    rest: 'End session',
+    repeat_prompt: 'Repeat prompt',
+    none: 'No match',
+  };
+  const tone = isNone
+    ? 'border-zinc-700 bg-zinc-800/60 text-zinc-400'
+    : 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200';
+  const usedWhisper = result.transcribe_source === 'whisper';
+  return (
+    <div className="mt-3 flex flex-col gap-1.5 text-[11px]">
+      {/* Transcript line — shows what STT (or the user's keyboard)
+          actually produced, separately from the routed action. */}
+      {result.transcript && (
+        <div className="font-mono text-zinc-400">
+          <span className="text-zinc-600">heard:</span> "{result.transcript}"
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          className={'rounded-full border px-2 py-0.5 uppercase tracking-wider ' + tone}
+        >
+          → {actionLabel[result.action]}
+        </span>
+        <span className="font-mono text-zinc-500">
+          {Math.round(result.confidence * 100)}% confidence
+        </span>
+        {usedWhisper && result.transcribe_latency_ms !== null && (
+          <span className="font-mono text-zinc-500">
+            Whisper {result.transcribe_latency_ms} ms
+          </span>
+        )}
+        <span className="font-mono text-zinc-500">
+          {sourceLabel} {result.latency_ms} ms
+        </span>
+        {!result.intent_model_loaded && result.source === 'heuristic' && (
+          <span className="text-[10px] italic text-amber-400/80">
+            (FunctionGemma still warming up)
+          </span>
+        )}
+      </div>
     </div>
   );
 }

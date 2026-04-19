@@ -73,6 +73,8 @@ Client → Server
   { type: "start_session" }
   { type: "audio", pcm_b64: "<base64 int16 LE>", sample_rate: 16000 }
   { type: "command", action: "skip" | "rest" | "repeat_prompt" }
+  { type: "intent", utterance: "<typed text, e.g. 'I'm tired'>" }
+  { type: "intent_audio", pcm_b64: "<base64 int16 LE>", sample_rate: 16000 }
 
 Server → Client
   { type: "loading" }                                  # model still warming up
@@ -84,13 +86,61 @@ Server → Client
   { type: "coach", heard, matched_prompt, ack,
                    feedback, next_action,
                    metrics_observed, latency_s }
+  { type: "audio_reply", wav_b64, source }             # macOS `say` rendered TTS
   { type: "advance" | "retry" | "rest" }               # cue before next drill
+  { type: "intent_result", action, confidence,         # voice-command verdict
+                   utterance, source, latency_ms,
+                   intent_model_loaded,
+                   transcript, transcribe_latency_ms,
+                   transcribe_source }                 # "whisper" | "client"
   { type: "session_done", summary: { advanced, total,
                                       retries, avg_dbfs,
                                       json_failures,
                                       rest_called,
                                       session_log } }
   { type: "error", code, message }                     # code uses cli/_exit.py
+```
+
+### Three on-device models
+
+| Model | Job | Where it runs |
+| --- | --- | --- |
+| **Gemma 4 E2B** | Audio-native multimodal coaching for every drill turn | Cactus |
+| **Cactus Whisper** (`openai/whisper-tiny`) | Transcribes voice-command utterances on-device | Cactus |
+| **FunctionGemma 270M** | Routes the transcript to `skip` / `rest` / `repeat_prompt` / `none` | Cactus |
+
+Voice commands flow `mic → PCM → Whisper → text → FunctionGemma → action`.
+**No browser SpeechRecognition is used** — that API routes audio through
+Google's cloud STT on Chrome and would break the on-device privacy
+story. If Whisper isn't loaded yet, the UI tells the user to type the
+command and the typed-text path goes straight to FunctionGemma without
+the STT hop.
+
+If FunctionGemma isn't loaded yet, the server falls back to a
+regex/keyword classifier so commands still work; the chip shows
+"Regex fallback" so you can see what happened. Override the models
+with:
+
+```bash
+VOICE_COACH_WHISPER_ID=openai/whisper-tiny \
+VOICE_COACH_FUNCGEMMA_ID=google/functiongemma-270m-it \
+./run-web
+```
+
+### Server-side TTS (macOS `say`)
+
+The coach's reply is rendered to a WAV on the backend with macOS `say`
+and shipped down the WebSocket as `audio_reply`. The frontend plays the
+WAV directly — no `window.speechSynthesis`, no platform-dependent voice
+quality, no chance of a Chrome cloud-TTS round-trip. If `say` isn't
+present (Linux / CI / Docker) the backend skips the frame and the
+client's `speechSynthesis` kicks in as a graceful fallback ~350 ms
+later.
+
+Pick a different macOS voice with:
+
+```bash
+VOICE_COACH_SAY_VOICE="Samantha" ./run-web
 ```
 
 ## Customising
@@ -159,6 +209,8 @@ scheme as the CLI (`cli/_exit.py`):
 - `cli/chat.py`: `ensure_lib_discoverable`, `ensure_model`,
   `_cactus_complete_audio`.
 - `cli/content.py`: `Drill`, `default_drill_set`.
+- `cli/intent.py`: `Intent`, `IntentResult`, `HeuristicClassifier`,
+  `FunctionGemmaClassifier`, `classify` — the on-device intent router.
 - `cli/_log.py`, `cli/_exit.py`: structured logging + typed exit codes.
 
 The only thing the server reimplements is mic capture (browser does it) and

@@ -31,6 +31,12 @@ export interface DrillMsg {
   focus?: string;
   target_repetitions?: number;
   target_duration_sec?: number;
+  /** Base64-encoded WAV of the drill prompt rendered server-side via
+   * macOS `say`. When present, the client should play this instead of
+   * speaking the prompt via browser speechSynthesis — keeps the entire
+   * session on ONE consistent voice (otherwise drill prompts and coach
+   * replies use different TTS engines and sound like two voices). */
+  prompt_wav_b64?: string;
 }
 
 export interface MetricsMsg {
@@ -50,6 +56,47 @@ export interface CoachMsg {
   latency_s: number;
 }
 
+export interface IntentResultMsg {
+  type: 'intent_result';
+  /** Routed action — `none` means the router refused to act. */
+  action: 'skip' | 'rest' | 'repeat_prompt' | 'none';
+  /** 0..1 self-reported confidence. */
+  confidence: number;
+  /** Echo of the (lowercased, whitespace-collapsed) input. */
+  utterance: string;
+  /** Which classifier decided: `functiongemma` or `heuristic`. */
+  source: 'functiongemma' | 'heuristic';
+  /** Wall-clock classification time in ms. Useful as a "sub-100ms"
+   * proof point when the router is the FunctionGemma model. */
+  latency_ms: number;
+  /** Whether FunctionGemma 270M was loaded at the time of the call.
+   * False means the heuristic ran by necessity. */
+  intent_model_loaded: boolean;
+  /** What Whisper heard (audio path) or the typed text (typed path).
+   * Surfaced so the demo chip can show the transcript next to the
+   * routed action. */
+  transcript: string;
+  /** Whisper-tiny transcription latency in ms. null for the typed
+   * path (no STT was performed). */
+  transcribe_latency_ms: number | null;
+  /** "whisper" when the server transcribed audio on-device, "client"
+   * when the user typed (or when an older client transcribed locally
+   * before sending text). */
+  transcribe_source: 'whisper' | 'client';
+}
+
+export interface AudioReplyMsg {
+  type: 'audio_reply';
+  /** Base64-encoded WAV of the coach's spoken reply, rendered by the
+   * server via macOS `say`. Played as-is — keeps every byte of TTS
+   * audio on this machine. */
+  wav_b64: string;
+  /** Identifies the renderer (currently always "macos_say") so the
+   * frontend can show provenance and degrade gracefully if a future
+   * server uses a different on-device TTS. */
+  source: string;
+}
+
 export interface SummaryMsg {
   type: 'session_done';
   summary: {
@@ -63,23 +110,41 @@ export interface SummaryMsg {
   };
 }
 
+export interface ReadyMsg {
+  type: 'ready';
+  /** True when the backend can render the coach's reply to a WAV via
+   * macOS `say` and ship it as `audio_reply`. The client uses this to
+   * pick exactly one TTS source per session — server WAV when true,
+   * browser speechSynthesis when false — so the two never race and
+   * play simultaneously. */
+  tts_available?: boolean;
+  /** Snapshot of the optional models at handshake time; UI uses this
+   * for status badges. */
+  intent_loaded?: boolean;
+  whisper_loaded?: boolean;
+}
+
 export type ServerMessage =
   | { type: 'loading' }
-  | { type: 'ready' }
+  | ReadyMsg
   | DrillMsg
   | MetricsMsg
   | { type: 'thinking' }
   | CoachMsg
+  | AudioReplyMsg
   | { type: 'advance' }
   | { type: 'retry' }
   | { type: 'rest' }
+  | IntentResultMsg
   | SummaryMsg
   | { type: 'error'; code: number; message: string };
 
 export type ClientMessage =
   | { type: 'start_session' }
   | { type: 'audio'; pcm_b64: string; sample_rate: number }
-  | { type: 'command'; action: 'skip' | 'rest' | 'repeat_prompt' };
+  | { type: 'command'; action: 'skip' | 'rest' | 'repeat_prompt' }
+  | { type: 'intent'; utterance: string }
+  | { type: 'intent_audio'; pcm_b64: string; sample_rate: number };
 
 export interface Connection {
   send: (msg: ClientMessage) => void;
@@ -98,16 +163,28 @@ const STATES = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'] as const;
 
 function logSend(msg: ClientMessage) {
   // Audio messages are big — don't dump the base64 blob into console.
-  if (msg.type === 'audio') {
+  if (msg.type === 'audio' || msg.type === 'intent_audio') {
     const bytes = Math.round((msg.pcm_b64.length * 3) / 4);
-    console.log('[coach ws] → audio', { sample_rate: msg.sample_rate, base64_len: msg.pcm_b64.length, est_pcm_bytes: bytes });
+    console.log('[coach ws] →', msg.type, { sample_rate: msg.sample_rate, base64_len: msg.pcm_b64.length, est_pcm_bytes: bytes });
   } else {
     console.log('[coach ws] →', msg);
   }
 }
 
 function logRecv(msg: ServerMessage) {
-  console.log('[coach ws] ←', msg);
+  // Same treatment for inbound TTS audio — just summarise the size.
+  if (msg.type === 'audio_reply') {
+    const bytes = Math.round((msg.wav_b64.length * 3) / 4);
+    console.log('[coach ws] ← audio_reply', { source: msg.source, base64_len: msg.wav_b64.length, est_wav_bytes: bytes });
+  } else if (msg.type === 'drill' && msg.prompt_wav_b64) {
+    // Drill payloads can carry a multi-KB prompt WAV — log a summary
+    // instead of dumping the base64 blob into devtools.
+    const { prompt_wav_b64, ...rest } = msg;
+    const bytes = Math.round((prompt_wav_b64.length * 3) / 4);
+    console.log('[coach ws] ←', { ...rest, prompt_wav: { base64_len: prompt_wav_b64.length, est_wav_bytes: bytes } });
+  } else {
+    console.log('[coach ws] ←', msg);
+  }
 }
 
 export function connect(

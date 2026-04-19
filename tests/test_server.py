@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import struct
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -53,6 +54,34 @@ def server(monkeypatch, tmp_path):
 
     monkeypatch.setattr(srv.holder, "ensure_loaded", _noop_ensure_loaded)
 
+    # The lifespan handler also schedules `intent_holder.ensure_loaded()`,
+    # which would try to download + load FunctionGemma 270M. Stub it so
+    # the WS tests run without the model present and so the per-test
+    # baseline is "router not loaded → heuristic fallback active".
+    srv.intent_holder.cactus = None
+    srv.intent_holder.model = None
+    srv.intent_holder._classifier = None
+    srv.intent_holder.load_error = None
+    monkeypatch.setattr(srv.intent_holder, "ensure_loaded", _noop_ensure_loaded)
+
+    # Whisper holder — same treatment. Default state across the suite
+    # is "Whisper not loaded", which means `intent_audio` requests
+    # respond with a clean error frame. Tests that exercise the audio
+    # path inject their own fake transcribe directly on the holder.
+    srv.whisper_holder.cactus = None
+    srv.whisper_holder.model = None
+    srv.whisper_holder.weights_path = None
+    srv.whisper_holder.load_error = None
+    monkeypatch.setattr(srv.whisper_holder, "ensure_loaded", _noop_ensure_loaded)
+
+    # Force-disable macOS `say` rendering by default so the existing
+    # `coach` tests (which assert frame ordering) don't suddenly see
+    # an extra `audio_reply` slipped in. The real `_say_to_wav`
+    # short-circuits to None when HAS_SAY is False, so we don't need
+    # to patch the function itself — direct-probe tests can still
+    # exercise the real implementation by setting HAS_SAY back to True.
+    monkeypatch.setattr(srv, "HAS_SAY", False)
+
     # Default canned reply — overridable per-test.
     state = {
         "responses": [
@@ -94,6 +123,17 @@ def server(monkeypatch, tmp_path):
     srv.holder.model = None
     srv.holder.weights_path = None
     srv.holder.load_error = None
+    # Same for the intent holder — important because a previous test
+    # may have monkeypatched a fake classifier into _classifier.
+    srv.intent_holder.cactus = None
+    srv.intent_holder.model = None
+    srv.intent_holder._classifier = None
+    srv.intent_holder.load_error = None
+    # And the whisper holder.
+    srv.whisper_holder.cactus = None
+    srv.whisper_holder.model = None
+    srv.whisper_holder.weights_path = None
+    srv.whisper_holder.load_error = None
 
 
 # ---- HTTP endpoints ------------------------------------------------------
@@ -134,6 +174,25 @@ def test_ws_sends_ready_when_model_already_loaded(server):
         with client.websocket_connect("/ws/coach") as ws:
             msg = ws.receive_json()
             assert msg["type"] == "ready"
+            # Capability flags must be present so the client can pick
+            # exactly one TTS source (server WAV or browser) without
+            # racing. False here because the fixture forces HAS_SAY off.
+            assert msg["tts_available"] is False
+            assert msg["intent_loaded"] is False
+            assert msg["whisper_loaded"] is False
+
+
+def test_ws_ready_reports_tts_available_when_say_present(server, monkeypatch):
+    """When `say` is present on the host, the ready frame says so so
+    the client can suppress its own speechSynthesis and avoid the
+    double-voice playback."""
+    from app import main as srv
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            msg = ws.receive_json()
+            assert msg["type"] == "ready"
+            assert msg["tts_available"] is True
 
 
 def test_ws_sends_loading_then_ready_if_not_loaded(server, monkeypatch):
@@ -494,6 +553,539 @@ def test_ws_coach_says_rest_ends_session(server):
             done = ws.receive_json()
             assert done["type"] == "session_done"
             assert done["summary"]["rest_called"] is True
+
+
+def test_ws_intent_skip_dispatches_skip_command(server):
+    """Intent message routed by the heuristic (no FunctionGemma loaded)
+    must produce both an intent_result frame AND the same drill-loop
+    behaviour as a manual `command:skip`."""
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            d0 = ws.receive_json()
+            ws.send_json({"type": "intent", "utterance": "skip this one"})
+            res = ws.receive_json()
+            assert res["type"] == "intent_result"
+            assert res["action"] == "skip"
+            assert res["source"] == "heuristic"
+            assert res["intent_model_loaded"] is False
+            assert res["confidence"] >= 0.55
+            assert isinstance(res["latency_ms"], int)
+            # Typed path: no Whisper, transcript echoes utterance.
+            assert res["transcribe_source"] == "client"
+            assert res["transcribe_latency_ms"] is None
+            assert res["transcript"] == "skip this one"
+            # Same drill-loop side effect as a manual skip.
+            assert ws.receive_json()["type"] == "advance"
+            d1 = ws.receive_json()
+            assert d1["type"] == "drill"
+            assert d1["position"] == d0["position"] + 1
+
+
+def test_ws_intent_rest_ends_session(server):
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({"type": "intent", "utterance": "I'm tired"})
+            res = ws.receive_json()
+            assert res["action"] == "rest"
+            done = ws.receive_json()
+            assert done["type"] == "session_done"
+            assert done["summary"]["rest_called"] is True
+
+
+def test_ws_intent_repeat_resends_current_drill(server):
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            d0 = ws.receive_json()
+            ws.send_json({"type": "intent", "utterance": "say it again"})
+            res = ws.receive_json()
+            assert res["action"] == "repeat_prompt"
+            d_again = ws.receive_json()
+            assert d_again["type"] == "drill"
+            assert d_again["position"] == d0["position"]
+
+
+def test_ws_intent_unmatched_does_not_dispatch(server):
+    """Off-topic utterance returns intent_result with action=none and
+    leaves the drill state untouched. The next message back is the
+    response to whatever the client does NEXT, not anything auto-fired."""
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            d0 = ws.receive_json()
+            ws.send_json({"type": "intent", "utterance": "the blue spot"})
+            res = ws.receive_json()
+            assert res["type"] == "intent_result"
+            assert res["action"] == "none"
+            # Verify nothing else fires by sending a real command and
+            # checking we get its response next (not a stray drill).
+            ws.send_json({"type": "command", "action": "skip"})
+            assert ws.receive_json()["type"] == "advance"
+            d1 = ws.receive_json()
+            assert d1["position"] == d0["position"] + 1
+
+
+def test_ws_intent_uses_funcgemma_when_loaded(server, monkeypatch):
+    """When the IntentHolder has a classifier, it must be consulted
+    (and its source must be reported)."""
+    from app import main as srv
+    import intent as intent_mod
+
+    fake = MagicMock(spec=intent_mod.FunctionGemmaClassifier)
+    fake.classify.return_value = intent_mod.IntentResult(
+        intent=intent_mod.Intent.SKIP,
+        confidence=0.99,
+        utterance="next",
+        source="functiongemma",
+        latency_ms=42,
+    )
+    # Pretend FunctionGemma is loaded by overriding the holder for one test.
+    monkeypatch.setattr(srv.intent_holder, "_classifier", fake)
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({"type": "intent", "utterance": "next"})
+            res = ws.receive_json()
+            assert res["type"] == "intent_result"
+            assert res["source"] == "functiongemma"
+            assert res["latency_ms"] == 42
+            assert res["intent_model_loaded"] is True
+            # Underlying classifier was invoked.
+            fake.classify.assert_called_once_with("next")
+
+
+def test_ws_intent_empty_utterance_returns_none(server):
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({"type": "intent", "utterance": ""})
+            res = ws.receive_json()
+            assert res["action"] == "none"
+
+
+def test_health_reports_intent_holder_status(server):
+    """Health endpoint surfaces the intent-router state alongside the
+    coach model so the demo can show two independent on-device models."""
+    with TestClient(server["app"]) as client:
+        body = client.get("/health").json()
+        assert "intent_loaded" in body
+        assert body["intent_loaded"] is False  # not loaded in tests
+        assert "intent_model_id" in body
+        assert "functiongemma" in body["intent_model_id"]
+
+
+def test_health_reports_whisper_holder_status(server):
+    with TestClient(server["app"]) as client:
+        body = client.get("/health").json()
+        assert "whisper_loaded" in body
+        assert body["whisper_loaded"] is False  # not loaded in tests
+        assert "whisper" in body["whisper_model_id"]
+        assert "tts_available" in body
+        assert body["tts_available"] is False  # forced off in fixture
+
+
+# ---- intent_audio: Cactus Whisper transcription path --------------------
+
+
+def test_ws_intent_audio_when_whisper_unloaded_returns_error(server):
+    """Audio command before Whisper is ready must emit a typed error
+    so the UI can suggest typing the command instead. Drill state must
+    not change."""
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            d0 = ws.receive_json()
+            ws.send_json({
+                "type": "intent_audio",
+                "pcm_b64": _b64_pcm(1.0),
+                "sample_rate": 16000,
+            })
+            err = ws.receive_json()
+            assert err["type"] == "error"
+            assert "Whisper" in err["message"] or "whisper" in err["message"]
+            # Loop continues — explicit skip still works.
+            ws.send_json({"type": "command", "action": "skip"})
+            assert ws.receive_json()["type"] == "advance"
+            assert ws.receive_json()["position"] == d0["position"] + 1
+
+
+def test_ws_intent_audio_transcribes_and_routes(server):
+    """When Whisper is loaded, intent_audio runs through the holder's
+    transcribe(), then through the existing classifier, then dispatches
+    the matched action. The result chip carries both latencies."""
+    from app import main as srv
+
+    fake_holder_transcribe = MagicMock(return_value=("skip this one", 137))
+    # Mark the holder as loaded so the WS doesn't bail out.
+    srv.whisper_holder.model = MagicMock(name="whisper_handle")
+    srv.whisper_holder.cactus = MagicMock()
+    srv.whisper_holder.transcribe = fake_holder_transcribe
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            d0 = ws.receive_json()
+            ws.send_json({
+                "type": "intent_audio",
+                "pcm_b64": _b64_pcm(1.0),
+                "sample_rate": 16000,
+            })
+            res = ws.receive_json()
+            assert res["type"] == "intent_result"
+            assert res["action"] == "skip"
+            assert res["transcribe_source"] == "whisper"
+            assert res["transcribe_latency_ms"] == 137
+            assert res["transcript"] == "skip this one"
+            # Underlying transcribe was called once with the raw PCM.
+            assert fake_holder_transcribe.call_count == 1
+            (sent_pcm,), _ = fake_holder_transcribe.call_args
+            assert len(sent_pcm) == 32000
+            # Drill-loop side effect.
+            assert ws.receive_json()["type"] == "advance"
+            assert ws.receive_json()["position"] == d0["position"] + 1
+
+
+def test_ws_intent_audio_wrong_sample_rate_errors(server):
+    from app import main as srv
+    srv.whisper_holder.model = MagicMock()
+    srv.whisper_holder.cactus = MagicMock()
+    srv.whisper_holder.transcribe = MagicMock(return_value=("", 0))
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({
+                "type": "intent_audio",
+                "pcm_b64": _b64_pcm(1.0),
+                "sample_rate": 22050,
+            })
+            err = ws.receive_json()
+            assert err["type"] == "error"
+            assert "sample_rate" in err["message"]
+
+
+def test_ws_intent_audio_empty_pcm_errors(server):
+    from app import main as srv
+    srv.whisper_holder.model = MagicMock()
+    srv.whisper_holder.cactus = MagicMock()
+    srv.whisper_holder.transcribe = MagicMock()
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({
+                "type": "intent_audio",
+                "pcm_b64": "",
+                "sample_rate": 16000,
+            })
+            err = ws.receive_json()
+            assert err["type"] == "error"
+            assert "empty" in err["message"]
+            srv.whisper_holder.transcribe.assert_not_called()
+
+
+def test_ws_intent_audio_transcribe_failure_returns_error(server):
+    from app import main as srv
+    srv.whisper_holder.model = MagicMock()
+    srv.whisper_holder.cactus = MagicMock()
+    srv.whisper_holder.transcribe = MagicMock(
+        side_effect=RuntimeError("whisper boom")
+    )
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({
+                "type": "intent_audio",
+                "pcm_b64": _b64_pcm(1.0),
+                "sample_rate": 16000,
+            })
+            err = ws.receive_json()
+            assert err["type"] == "error"
+            assert "whisper" in err["message"].lower()
+
+
+def test_ws_intent_audio_invalid_b64_errors(server):
+    from app import main as srv
+    srv.whisper_holder.model = MagicMock()
+    srv.whisper_holder.cactus = MagicMock()
+    srv.whisper_holder.transcribe = MagicMock()
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({
+                "type": "intent_audio",
+                "pcm_b64": "not~~base64@@",
+                "sample_rate": 16000,
+            })
+            err = ws.receive_json()
+            assert err["type"] == "error"
+
+
+# ---- audio_reply: server-side macOS `say` TTS ----------------------------
+
+
+def test_ws_audio_reply_emitted_when_tts_available(server, monkeypatch):
+    """When `_say_to_wav` returns bytes, the server must emit an
+    audio_reply frame right after the coach frame.
+
+    With server-side TTS enabled the server ALSO renders drill prompts
+    (so the whole session uses one consistent voice instead of
+    alternating browser+say). That means `_say_to_wav` is called
+    multiple times: at least once per drill prompt sent + once per
+    coach reply. The test asserts the coach-reply call happened."""
+    from app import main as srv
+    rendered_wav = b"RIFF" + b"\x00" * 100  # plausible-looking bytes
+    say_calls = []
+
+    def fake_say(text):
+        say_calls.append(text)
+        return rendered_wav
+
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+    monkeypatch.setattr(srv, "_say_to_wav", fake_say)
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            drill0 = ws.receive_json()
+            assert drill0["type"] == "drill"
+            # First drill carries its own pre-rendered prompt wav so
+            # the client doesn't have to use browser TTS.
+            assert "prompt_wav_b64" in drill0
+            ws.send_json({
+                "type": "audio",
+                "pcm_b64": _b64_pcm(1.0),
+                "sample_rate": 16000,
+            })
+            ws.receive_json()  # metrics
+            ws.receive_json()  # thinking
+            coach_msg = ws.receive_json()
+            assert coach_msg["type"] == "coach"
+            audio = ws.receive_json()
+            assert audio["type"] == "audio_reply"
+            assert audio["source"] == "macos_say"
+            # WAV is base64-encoded; round-trip back to the bytes the
+            # fake renderer produced.
+            decoded = base64.b64decode(audio["wav_b64"])
+            assert decoded == rendered_wav
+            # `say` was handed the joined ack + feedback line at some
+            # point — alongside the drill prompts.
+            assert any("Nice" in c for c in say_calls), say_calls
+
+
+def test_ws_drill_prompt_wav_attached_when_tts_available(server, monkeypatch):
+    """Drill frames must carry `prompt_wav_b64` so the client speaks
+    drill prompts via the SAME engine as coach replies. Without this,
+    drill prompts go through browser speechSynthesis and coach replies
+    go through `say`, alternating two voices and giving the patient the
+    impression that two separate TTS engines are talking."""
+    from app import main as srv
+    rendered_wav = b"DRILL_WAV"
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+    monkeypatch.setattr(srv, "_say_to_wav", lambda _t: rendered_wav)
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            drill0 = ws.receive_json()
+            assert drill0["type"] == "drill"
+            assert drill0["prompt_wav_b64"] == base64.b64encode(rendered_wav).decode("ascii")
+            # Skip → next drill must also carry a wav.
+            ws.send_json({"type": "command", "action": "skip"})
+            assert ws.receive_json()["type"] == "advance"
+            drill1 = ws.receive_json()
+            assert drill1["type"] == "drill"
+            assert "prompt_wav_b64" in drill1
+
+
+def test_ws_drill_omits_prompt_wav_when_tts_unavailable(server, monkeypatch):
+    """Without `say`, the drill frame must NOT include `prompt_wav_b64`
+    so the client knows to use its own browser TTS for the prompt."""
+    from app import main as srv
+    monkeypatch.setattr(srv, "HAS_SAY", False)
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            drill0 = ws.receive_json()
+            assert drill0["type"] == "drill"
+            assert "prompt_wav_b64" not in drill0
+
+
+def test_ws_drill_omits_prompt_wav_when_say_renders_nothing(server, monkeypatch):
+    """If `say` is present but the render fails, drill frame still ships
+    (just without the wav). Client falls back to browser TTS for the
+    prompt — better than dropping the prompt entirely."""
+    from app import main as srv
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+    monkeypatch.setattr(srv, "_say_to_wav", lambda _t: None)
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            drill0 = ws.receive_json()
+            assert drill0["type"] == "drill"
+            assert "prompt_wav_b64" not in drill0
+
+
+def test_build_drill_tts_handles_instruction_only_phase(server):
+    """Mirrors buildDrillTTS in audio.ts. When note is empty the
+    prompt IS the full instruction — speak it as-is (no 'Now: ...')."""
+    from app import main as srv
+    assert srv._build_drill_tts("Eee.", "") == "Eee."
+    assert srv._build_drill_tts("Eee.", "   ") == "Eee."
+
+
+def test_build_drill_tts_combines_note_then_prompt(server):
+    """When both note (cue) and prompt (utterance) are present, the
+    rendered line should drop trailing punctuation from the cue and
+    join with 'Now:' — same shape as the frontend builder. The trailing
+    '.' is appended unconditionally to match buildDrillTTS in audio.ts
+    (which produces the same double-dot when the prompt already ended
+    in punctuation; harmless to TTS engines)."""
+    from app import main as srv
+    out = srv._build_drill_tts("Hello there", "Read the phrase aloud.")
+    assert out == "Read the phrase aloud. Now: Hello there."
+    # Cue with trailing punctuation gets cleaned before the period.
+    out2 = srv._build_drill_tts("Hi", "Read the phrase aloud!! ")
+    assert out2 == "Read the phrase aloud. Now: Hi."
+
+
+def test_ws_no_audio_reply_when_say_returns_none(server, monkeypatch):
+    """When `_say_to_wav` returns None (say missing or failed), the
+    server must NOT emit an audio_reply — the next message should be
+    the normal advance/drill cue."""
+    from app import main as srv
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+    monkeypatch.setattr(srv, "_say_to_wav", lambda _t: None)
+
+    with TestClient(server["app"]) as client:
+        with client.websocket_connect("/ws/coach") as ws:
+            ws.receive_json()  # ready
+            ws.send_json({"type": "start_session"})
+            ws.receive_json()  # drill 0
+            ws.send_json({
+                "type": "audio",
+                "pcm_b64": _b64_pcm(1.0),
+                "sample_rate": 16000,
+            })
+            ws.receive_json()  # metrics
+            ws.receive_json()  # thinking
+            assert ws.receive_json()["type"] == "coach"
+            # Default canned reply has next_action=advance — that's
+            # what we should see next, with no audio_reply in between.
+            assert ws.receive_json()["type"] == "advance"
+
+
+def test_say_to_wav_returns_none_without_say_binary(server, monkeypatch):
+    """Direct probe of the helper. Pretend `say` is missing — it
+    should return None without raising or shelling out."""
+    from app import main as srv
+    monkeypatch.setattr(srv, "HAS_SAY", False)
+    assert srv._say_to_wav("hello world") is None
+
+
+def test_say_to_wav_returns_none_for_empty_text(server, monkeypatch):
+    from app import main as srv
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+    # Empty input must short-circuit BEFORE shelling out.
+    assert srv._say_to_wav("") is None
+    assert srv._say_to_wav("   ") is None
+
+
+def test_say_to_wav_runs_subprocess_and_returns_bytes(server, monkeypatch):
+    """Cover the happy subprocess path. We mock subprocess.run to
+    pretend `say` ran and wrote the wav file we expected at the
+    --output path it received."""
+    from app import main as srv
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+    monkeypatch.setattr(srv, "SAY_VOICE", "Samantha")  # exercise -v branch
+
+    expected_bytes = b"RIFF\x00\x00\x00\x00WAVEfake-pcm-data"
+    captured_args: list[list[str]] = []
+
+    def fake_run(args, **_kw):
+        captured_args.append(args)
+        out_path = Path(args[args.index("-o") + 1])
+        out_path.write_bytes(expected_bytes)
+        return MagicMock(returncode=0, stderr=b"")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    result = srv._say_to_wav("hello world")
+    assert result == expected_bytes
+    # `say` was invoked with the data-format flag, optional voice,
+    # an output path, then the text after `--`.
+    assert len(captured_args) == 1
+    args = captured_args[0]
+    assert args[0] == "say"
+    assert "--data-format=LEI16@22050" in args
+    assert "-v" in args and "Samantha" in args
+    assert "--" in args
+    assert "hello world" in args
+
+
+def test_say_to_wav_returns_none_when_subprocess_fails(server, monkeypatch):
+    from app import main as srv
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_a, **_kw: MagicMock(returncode=1, stderr=b"boom"),
+    )
+    assert srv._say_to_wav("hello") is None
+
+
+def test_say_to_wav_returns_none_when_subprocess_times_out(server, monkeypatch):
+    from app import main as srv
+    import subprocess as _sp
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+    def boom(*_a, **_kw):
+        raise _sp.TimeoutExpired(cmd="say", timeout=10)
+    monkeypatch.setattr("subprocess.run", boom)
+    assert srv._say_to_wav("hello") is None
+
+
+def test_say_to_wav_returns_none_when_output_file_empty(server, monkeypatch):
+    """If `say` exits 0 but writes a zero-byte file, we treat that as
+    a failure rather than shipping an empty WAV the browser will
+    reject."""
+    from app import main as srv
+    monkeypatch.setattr(srv, "HAS_SAY", True)
+
+    def fake_run(args, **_kw):
+        out_path = Path(args[args.index("-o") + 1])
+        out_path.write_bytes(b"")
+        return MagicMock(returncode=0, stderr=b"")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert srv._say_to_wav("hello") is None
 
 
 def test_ws_cactus_reset_exception_is_logged_but_continues(server, monkeypatch):

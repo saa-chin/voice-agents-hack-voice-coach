@@ -624,6 +624,88 @@ export function isTTSAvailable(): boolean {
   return typeof window !== 'undefined' && 'speechSynthesis' in window;
 }
 
+// ---- Server-rendered TTS playback ----------------------------------------
+//
+// The backend may render the coach's reply via macOS `say` and ship a
+// WAV down the WebSocket. Playing that here keeps the entire voice
+// path (in AND out) on the user's machine — no Chrome cloud-TTS, no
+// platform-dependent voice quality. If the WAV doesn't arrive (e.g.
+// `say` not present on a Linux backend), the caller still has
+// `speak()` above as a graceful fallback.
+
+let currentServerAudio: HTMLAudioElement | null = null;
+
+/** Stop any in-flight server-rendered TTS clip. Safe to call when nothing
+ * is playing. Used to interrupt the coach when the user starts a new
+ * recording or cancels the session. */
+export function cancelServerSpeech(): void {
+  if (currentServerAudio) {
+    try {
+      currentServerAudio.pause();
+      currentServerAudio.src = '';
+    } catch {
+      /* ignore */
+    }
+    currentServerAudio = null;
+  }
+}
+
+/**
+ * Play a base64-encoded WAV. Returns a promise that resolves when
+ * playback finishes (or rejects with the underlying error). Any prior
+ * server-rendered clip is hard-cancelled first so two coach replies
+ * never overlap.
+ */
+export function playWavBase64(wavB64: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (!wavB64) {
+      resolve();
+      return;
+    }
+    cancelServerSpeech();
+    let url: string;
+    try {
+      // Decode base64 → Uint8Array → Blob → object URL. We don't use
+      // `data:audio/wav;base64,...` because some browsers refuse to
+      // play long data URLs inside <audio>.
+      const bin = atob(wavB64);
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) buf[i] = bin.charCodeAt(i);
+      const blob = new Blob([buf], { type: 'audio/wav' });
+      url = URL.createObjectURL(blob);
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error(String(e)));
+      return;
+    }
+    const audio = new Audio(url);
+    currentServerAudio = audio;
+    const cleanup = () => {
+      if (currentServerAudio === audio) currentServerAudio = null;
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        /* ignore */
+      }
+    };
+    audio.addEventListener('ended', () => {
+      cleanup();
+      resolve();
+    });
+    audio.addEventListener('error', () => {
+      cleanup();
+      reject(new Error('audio playback failed'));
+    });
+    audio.play().catch((e) => {
+      cleanup();
+      reject(e instanceof Error ? e : new Error(String(e)));
+    });
+  });
+}
+
+export function isServerSpeaking(): boolean {
+  return currentServerAudio !== null && !currentServerAudio.paused;
+}
+
 /**
  * Whether TTS is currently producing (or about to produce) audio. The mic
  * auto-arm logic uses this to avoid capturing the coach's own voice.

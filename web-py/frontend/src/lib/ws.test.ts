@@ -215,15 +215,40 @@ describe('audio message size logging', () => {
     lastWS().triggerOpen();
     await c.ready;
     c.send({ type: 'audio', pcm_b64: 'AAAA'.repeat(100), sample_rate: 16000 });
+    // Audio sends now log with the type as a separate arg so the
+    // intent_audio path can share the same compact size summary
+    // without duplicating the format string.
     const audioLog = (console.log as any).mock.calls.find(
-      (args: unknown[]) => args[0] === '[coach ws] → audio',
+      (args: unknown[]) =>
+        args[0] === '[coach ws] →' && args[1] === 'audio',
     );
     expect(audioLog).toBeDefined();
-    const meta = audioLog?.[1];
+    const meta = audioLog?.[2];
     expect(meta).toMatchObject({
       sample_rate: 16000,
       base64_len: 400,
       est_pcm_bytes: 300,
+    });
+  });
+
+  it('uses the same compact summary for intent_audio messages', async () => {
+    const c = connect('ws://example/test', () => {});
+    lastWS().triggerOpen();
+    await c.ready;
+    c.send({
+      type: 'intent_audio',
+      pcm_b64: 'AAAA'.repeat(50),
+      sample_rate: 16000,
+    });
+    const log = (console.log as any).mock.calls.find(
+      (args: unknown[]) =>
+        args[0] === '[coach ws] →' && args[1] === 'intent_audio',
+    );
+    expect(log).toBeDefined();
+    expect(log?.[2]).toMatchObject({
+      sample_rate: 16000,
+      base64_len: 200,
+      est_pcm_bytes: 150,
     });
   });
 });
